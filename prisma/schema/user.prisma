@@ -8,11 +8,15 @@ model User {
   emailVerified Boolean      @default(false) @map("email_verified")
   role          Role         @default(USER)
   status        UserStatus   @default(ACTIVE)
+  plan          UserPlan     @default(FREE)
+  credits       Int          @default(5)
   imageUrl      String       @default("") @map("image_url")
   imagePublicId String       @default("") @map("image_public_id")
   phone         String       @default("")
   createdAt     DateTime     @default(now()) @map("created_at")
   updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  vectorJobs    VectorJob[]
 
   @@map("users")
 }

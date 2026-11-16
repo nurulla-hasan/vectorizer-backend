@@ -3,15 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "REST API for Vectorizer",
-  "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/src/server.js",
   "engines": {
     "node": ">=20.0.0"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && tsup",
-    "start": "node dist/server.js",
+    "build": "prisma generate && tsc",
+    "start": "node dist/src/server.js",
     "postinstall": "prisma generate",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
@@ -45,6 +44,7 @@
     "pino": "^9.7.0",
     "pino-http": "^10.5.0",
     "redis": "^6.2.1",
+    "sharp": "^0.35.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -63,7 +63,6 @@
     "@types/passport-local": "^1.0.38",
     "@types/pg": "^8.15.6",
     "prisma": "^7.8.0",
-    "tsup": "^8.5.1",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3"
   }

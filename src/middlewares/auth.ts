@@ -80,3 +80,37 @@ export const auth = (...allowedRoles: Role[]): RequestHandler =>
 
     next();
   });
+
+export const optionalAuth: RequestHandler = async (req, _res, next) => {
+  const token = getAccessToken(req);
+  if (!token) return next();
+
+  try {
+    const decoded = jwtUtils.verifyToken(token, config.jwt_access_secret);
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        status: true,
+        emailVerified: true,
+      },
+    });
+
+    if (user && user.emailVerified && user.status === 'ACTIVE') {
+      req.user = {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      };
+    }
+  } catch {
+    // Guest access allowed when token is absent or invalid
+  }
+
+  next();
+};

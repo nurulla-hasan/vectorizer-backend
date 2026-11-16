@@ -75,8 +75,6 @@ const getAllUsersFromDB = async (query: GetUsersQueryInput, currentUserId?: stri
         imageUrl: true,
         emailVerified: true,
         createdAt: true,
-        teacherProfile: true,
-        studentProfile: true,
       },
     }),
   ]);
@@ -105,8 +103,6 @@ const getUserByIdFromDB = async (id: string) => {
       imageUrl: true,
       emailVerified: true,
       createdAt: true,
-      teacherProfile: true,
-      studentProfile: true,
     },
   });
 

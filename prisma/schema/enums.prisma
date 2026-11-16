@@ -12,3 +12,15 @@ enum AuthProvider {
   CREDENTIAL
   GOOGLE
 }
+
+enum UserPlan {
+  FREE
+  PRO
+  API
+}
+
+enum VectorJobStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
