@@ -3,12 +3,14 @@ import { AppError } from '../../utils/app-error.js';
 import { catchAsync } from '../../utils/catch-async.js';
 import { sendResponse } from '../../utils/send-response.js';
 import { vectorizerService } from './vectorizer.service.js';
+import { exportQuerySchema, vectorJobIdSchema } from './vectorizer.validation.js';
 
 const getJobId = (id: string | string[] | undefined): string => {
-  if (!id || Array.isArray(id)) {
-    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid vector job ID');
+  const parsed = vectorJobIdSchema.safeParse(id);
+  if (!parsed.success) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Invalid vector job ID', 'INVALID_JOB_ID');
   }
-  return id;
+  return parsed.data;
 };
 
 const processImage = catchAsync(async (req, res) => {
@@ -24,7 +26,7 @@ const processImage = catchAsync(async (req, res) => {
 
 const getOriginalImage = catchAsync(async (req, res) => {
   const jobId = getJobId(req.params.id);
-  const { filePath } = await vectorizerService.getOriginalImageFile(jobId);
+  const { filePath } = await vectorizerService.getOriginalImageFile(jobId, req.user?.id);
 
   res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'private, max-age=3600');
@@ -33,7 +35,7 @@ const getOriginalImage = catchAsync(async (req, res) => {
 
 const getPreview = catchAsync(async (req, res) => {
   const jobId = getJobId(req.params.id);
-  const result = await vectorizerService.getPreviewData(jobId);
+  const result = await vectorizerService.getPreviewData(jobId, req.user?.id);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -45,7 +47,7 @@ const getPreview = catchAsync(async (req, res) => {
 
 const reprocess = catchAsync(async (req, res) => {
   const jobId = getJobId(req.params.id);
-  const result = await vectorizerService.reprocessJob(jobId, req.body ?? {});
+  const result = await vectorizerService.reprocessJob(jobId, req.body ?? {}, req.user?.id);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -61,11 +63,18 @@ const downloadSvg = catchAsync(async (req, res) => {
   }
 
   const jobId = getJobId(req.params.id);
-  const { filePath, fileName } = await vectorizerService.downloadSvgFile(jobId, req.user.id);
+  const { format, scale } = exportQuerySchema.parse(req.query);
+  const { buffer, mimeType, fileName } = await vectorizerService.exportVectorFile(
+    jobId,
+    req.user.id,
+    format,
+    scale,
+  );
 
-  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Content-Type', mimeType);
   res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-  res.sendFile(filePath);
+  res.setHeader('Content-Length', String(buffer.length));
+  res.send(buffer);
 });
 
 export const vectorizerController = {

@@ -13,14 +13,23 @@ import { apiRouter } from './routes/index.js';
 
 const app: Application = express();
 
+app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
+const allowedOrigins = Array.from(
+  new Set([config.frontend_url || 'http://localhost:3000', 'http://localhost:3000']),
+);
+
 // Security & utility middlewares
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  }),
+);
 app.use(
   cors({
     credentials: true,
-    origin: [config.frontend_url || 'http://localhost:3000', 'http://localhost:3000'],
+    origin: allowedOrigins,
   }),
 );
 app.use(compression());

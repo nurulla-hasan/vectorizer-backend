@@ -1,35 +1,33 @@
-import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import httpStatus from 'http-status';
+import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
+import SVGtoPDF from 'svg-to-pdfkit';
 import type { Prisma } from '../../../generated/prisma/client.js';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../utils/app-error.js';
-import { type VectorSettings, vectorSettingsSchema } from './vectorizer.validation.js';
+import {
+  parseSvgPreview,
+  readStoredEngine,
+  runVectorization,
+  SHARP_LIMIT_INPUT_PIXELS,
+  type VectorEngine,
+  type VectorPathItem,
+  type VectorPreviewData,
+} from './vectorizer.engine.js';
+import {
+  type ExportFormat,
+  type VectorSettings,
+  vectorSettingsSchema,
+} from './vectorizer.validation.js';
 
-const execFileAsync = promisify(execFile);
+export type { VectorEngine, VectorPathItem, VectorPreviewData };
 
 const STORAGE_ROOT = path.resolve(process.cwd(), 'storage', 'vectors');
 const MAX_DIMENSION = 2048;
-
-export interface VectorPathItem {
-  id: string;
-  fill: string;
-  d: string;
-}
-
-export interface VectorPreviewData {
-  viewBox: string;
-  width: number;
-  height: number;
-  pathCount: number;
-  palette: string[];
-  paths: VectorPathItem[];
-  svg: string;
-}
+const ALLOWED_RASTER_FORMATS = new Set(['png', 'jpeg', 'webp', 'gif', 'tiff', 'heif']);
 
 const resolveSafeStoragePath = (targetPath: string): string => {
   const resolved = path.resolve(targetPath);
@@ -39,192 +37,50 @@ const resolveSafeStoragePath = (targetPath: string): string => {
   return resolved;
 };
 
-const toHex = (r: number, g: number, b: number): string =>
-  `#${[r, g, b].map((c) => Math.max(0, Math.min(255, c)).toString(16).padStart(2, '0')).join('')}`;
-
 /**
- * Attempt vectorization via native vtracer binary if installed on the host.
+ * Prevent IDOR: user-owned jobs are private to that owner; guest jobs (`userId === null`)
+ * remain accessible via their opaque UUID to support guest preview -> login -> export.
  */
-const tryVtracerBinary = async (
-  inputPath: string,
-  outputPath: string,
-  settings: VectorSettings,
-): Promise<boolean> => {
-  const binary = process.env.VTRACER_PATH || 'vtracer';
-  try {
-    await execFileAsync(
-      binary,
-      [
-        '--input',
-        inputPath,
-        '--output',
-        outputPath,
-        '--colormode',
-        'color',
-        '--hierarchical',
-        settings.hierarchical,
-        '--mode',
-        settings.mode,
-        '--filter_speckle',
-        String(settings.filterSpeckle),
-        '--color_precision',
-        String(settings.colorPrecision),
-        '--corner_threshold',
-        String(settings.cornerThreshold),
-      ],
-      { timeout: 30_000 },
+const assertJobAccess = (jobUserId: string | null, requestUserId?: string): void => {
+  if (jobUserId && jobUserId !== requestUserId) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      'You do not have permission to access this vector job',
+      'JOB_FORBIDDEN',
     );
-    return true;
+  }
+};
+
+const sanitizeDownloadBasename = (rawName: string): string => {
+  const parsed = path.parse(rawName).name;
+  const cleaned = parsed
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return cleaned || 'vectorized';
+};
+
+const validateRasterUpload = async (buffer: Buffer): Promise<void> => {
+  let metadata: sharp.Metadata;
+  try {
+    metadata = await sharp(buffer, {
+      limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+    }).metadata();
   } catch {
-    return false;
-  }
-};
-
-/**
- * Built-in multi-color SVG path generator using sharp pixel quantization
- * and horizontal run-length region merging so vectorization works out-of-the-box.
- */
-const generateFallbackSvg = async (
-  inputPath: string,
-  outputPath: string,
-  settings: VectorSettings,
-): Promise<void> => {
-  const meta = await sharp(inputPath).metadata();
-  const origW = meta.width || 1;
-  const origH = meta.height || 1;
-
-  // Trace on a bounded working grid for fast, clean SVG path output
-  const maxTraceDim = 256;
-  const scale = Math.min(1, maxTraceDim / Math.max(origW, origH));
-  const tw = Math.max(1, Math.round(origW * scale));
-  const th = Math.max(1, Math.round(origH * scale));
-  const sx = origW / tw;
-  const sy = origH / th;
-
-  const { data } = await sharp(inputPath)
-    .resize(tw, th, { fit: 'fill', kernel: sharp.kernel.lanczos3 })
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  // Quantize step derived from colorPrecision (1..8)
-  const shift = Math.max(1, 9 - settings.colorPrecision);
-  const step = 1 << shift;
-  const half = step >> 1;
-
-  const colorRuns = new Map<string, Array<{ x: number; y: number; w: number }>>();
-  const colorCounts = new Map<string, number>();
-
-  for (let y = 0; y < th; y++) {
-    let runColor: string | null = null;
-    let runStart = 0;
-
-    for (let x = 0; x <= tw; x++) {
-      let hex: string | null = null;
-      if (x < tw) {
-        const idx = (y * tw + x) * 4;
-        const a = data[idx + 3] ?? 0;
-        if (a >= 32) {
-          const r = Math.min(255, Math.floor((data[idx] ?? 0) / step) * step + half);
-          const g = Math.min(255, Math.floor((data[idx + 1] ?? 0) / step) * step + half);
-          const b = Math.min(255, Math.floor((data[idx + 2] ?? 0) / step) * step + half);
-          hex = toHex(r, g, b);
-        }
-      }
-
-      if (hex !== runColor) {
-        if (runColor !== null) {
-          const w = x - runStart;
-          const list = colorRuns.get(runColor) ?? [];
-          list.push({ x: runStart, y, w });
-          colorRuns.set(runColor, list);
-          colorCounts.set(runColor, (colorCounts.get(runColor) ?? 0) + w);
-        }
-        runColor = hex;
-        runStart = x;
-      }
-    }
+    throw new AppError(
+      httpStatus.UNPROCESSABLE_ENTITY,
+      'Invalid or oversized raster image file.',
+      'INVALID_IMAGE',
+    );
   }
 
-  // Keep top maxColors and filter tiny speckles
-  const sortedColors = [...colorCounts.entries()]
-    .filter(([, count]) => count >= Math.max(1, settings.filterSpeckle))
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, settings.maxColors);
-
-  const fmt = (n: number) => Number(n.toFixed(2));
-  const pathElements: string[] = [];
-
-  for (const [hex] of sortedColors) {
-    const runs = colorRuns.get(hex);
-    if (!runs || runs.length === 0) continue;
-
-    const dParts: string[] = [];
-    for (const run of runs) {
-      const x1 = fmt(run.x * sx);
-      const y1 = fmt(run.y * sy);
-      const x2 = fmt((run.x + run.w) * sx);
-      const y2 = fmt((run.y + 1) * sy);
-      dParts.push(`M${x1} ${y1}H${x2}V${y2}H${x1}Z`);
-    }
-    pathElements.push(`  <path fill="${hex}" d="${dParts.join('')}" />`);
+  if (!metadata.format || !ALLOWED_RASTER_FORMATS.has(metadata.format)) {
+    throw new AppError(
+      httpStatus.UNPROCESSABLE_ENTITY,
+      'Unsupported image format. Please upload PNG, JPG, WebP, or GIF.',
+      'UNSUPPORTED_IMAGE_FORMAT',
+    );
   }
-
-  const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${origW} ${origH}" width="${origW}" height="${origH}">`,
-    ...pathElements,
-    `</svg>`,
-  ].join('\n');
-
-  await fs.writeFile(outputPath, svg, 'utf8');
-};
-
-const runVectorization = async (
-  originalPath: string,
-  svgPath: string,
-  settings: VectorSettings,
-): Promise<number> => {
-  const start = performance.now();
-  const usedVtracer = await tryVtracerBinary(originalPath, svgPath, settings);
-  if (!usedVtracer) {
-    await generateFallbackSvg(originalPath, svgPath, settings);
-  }
-  return Math.max(1, Math.round(performance.now() - start));
-};
-
-const parseSvgPreview = (svg: string, width: number, height: number): VectorPreviewData => {
-  const paths: VectorPathItem[] = [];
-  const paletteSet = new Set<string>();
-
-  const pathRegex = /<path\b([^>]*?)\/?>/gi;
-  let match: RegExpExecArray | null;
-  let idx = 0;
-
-  while ((match = pathRegex.exec(svg)) !== null) {
-    const attrs = match[1] ?? '';
-    const dMatch = attrs.match(/\bd=["']([^"']+)["']/i);
-    const fillMatch = attrs.match(/\bfill=["']([^"']+)["']/i);
-    if (!dMatch?.[1]) continue;
-
-    const fill = fillMatch?.[1] || '#000000';
-    if (fill !== 'none') paletteSet.add(fill);
-
-    paths.push({
-      id: `p_${idx++}`,
-      fill,
-      d: dMatch[1],
-    });
-  }
-
-  return {
-    viewBox: `0 0 ${width} ${height}`,
-    width,
-    height,
-    pathCount: paths.length,
-    palette: [...paletteSet],
-    paths,
-    svg,
-  };
 };
 
 const processImage = async (
@@ -236,16 +92,21 @@ const processImage = async (
     throw new AppError(httpStatus.BAD_REQUEST, 'Please upload an image file');
   }
 
+  await validateRasterUpload(file.buffer);
   const settings = vectorSettingsSchema.parse(rawSettings);
+
   const jobId = crypto.randomUUID();
   const jobDir = path.join(STORAGE_ROOT, jobId);
   await fs.mkdir(jobDir, { recursive: true });
 
   const originalPath = path.join(jobDir, 'original.png');
   const svgPath = path.join(jobDir, 'vector.svg');
+  let jobCreated = false;
 
   try {
-    let pipeline = sharp(file.buffer)
+    let pipeline = sharp(file.buffer, {
+      limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+    })
       .rotate()
       .resize(MAX_DIMENSION, MAX_DIMENSION, {
         fit: 'inside',
@@ -272,8 +133,14 @@ const processImage = async (
         originalPath,
       },
     });
+    jobCreated = true;
 
-    const processingMs = await runVectorization(originalPath, svgPath, settings);
+    const { processingMs, engine } = await runVectorization(
+      jobId,
+      originalPath,
+      svgPath,
+      settings,
+    );
 
     const updatedJob = await prisma.vectorJob.update({
       where: { id: job.id },
@@ -294,27 +161,36 @@ const processImage = async (
       },
     });
 
-    return updatedJob;
+    return {
+      ...updatedJob,
+      engine,
+    };
   } catch (error) {
-    await prisma.vectorJob
-      .update({
-        where: { id: jobId },
-        data: { status: 'FAILED' },
-      })
-      .catch(() => undefined);
+    if (jobCreated) {
+      await prisma.vectorJob
+        .update({
+          where: { id: jobId },
+          data: { status: 'FAILED' },
+        })
+        .catch(() => undefined);
+    } else {
+      await fs.rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     throw error;
   }
 };
 
-const getOriginalImageFile = async (jobId: string) => {
+const getOriginalImageFile = async (jobId: string, requestUserId?: string) => {
   const job = await prisma.vectorJob.findUnique({
     where: { id: jobId },
-    select: { id: true, originalPath: true, originalName: true },
+    select: { id: true, userId: true, originalPath: true, originalName: true },
   });
 
   if (!job) {
     throw new AppError(httpStatus.NOT_FOUND, 'Vector job not found');
   }
+
+  assertJobAccess(job.userId, requestUserId);
 
   const safePath = resolveSafeStoragePath(job.originalPath);
   await fs.access(safePath).catch(() => {
@@ -327,11 +203,12 @@ const getOriginalImageFile = async (jobId: string) => {
   };
 };
 
-const getPreviewData = async (jobId: string) => {
+const getPreviewData = async (jobId: string, requestUserId?: string) => {
   const job = await prisma.vectorJob.findUnique({
     where: { id: jobId },
     select: {
       id: true,
+      userId: true,
       width: true,
       height: true,
       status: true,
@@ -345,12 +222,17 @@ const getPreviewData = async (jobId: string) => {
     throw new AppError(httpStatus.NOT_FOUND, 'Vector job not found');
   }
 
+  assertJobAccess(job.userId, requestUserId);
+
   if (job.status !== 'COMPLETED' || !job.svgPath) {
     throw new AppError(httpStatus.BAD_REQUEST, 'Vector preview is not ready');
   }
 
   const safePath = resolveSafeStoragePath(job.svgPath);
-  const svg = await fs.readFile(safePath, 'utf8');
+  const [svg, engine] = await Promise.all([
+    fs.readFile(safePath, 'utf8'),
+    readStoredEngine(safePath),
+  ]);
   const preview = parseSvgPreview(svg, job.width, job.height);
 
   return {
@@ -358,12 +240,17 @@ const getPreviewData = async (jobId: string) => {
     width: job.width,
     height: job.height,
     processingMs: job.processingMs,
+    engine,
     settings: job.settings,
     preview,
   };
 };
 
-const reprocessJob = async (jobId: string, rawSettings: Partial<VectorSettings>) => {
+const reprocessJob = async (
+  jobId: string,
+  rawSettings: Partial<VectorSettings>,
+  requestUserId?: string,
+) => {
   const job = await prisma.vectorJob.findUnique({
     where: { id: jobId },
   });
@@ -371,6 +258,8 @@ const reprocessJob = async (jobId: string, rawSettings: Partial<VectorSettings>)
   if (!job) {
     throw new AppError(httpStatus.NOT_FOUND, 'Vector job not found');
   }
+
+  assertJobAccess(job.userId, requestUserId);
 
   const existingSettings = (job.settings as Partial<VectorSettings> | null) ?? {};
   const mergedSettings = vectorSettingsSchema.parse({
@@ -383,7 +272,12 @@ const reprocessJob = async (jobId: string, rawSettings: Partial<VectorSettings>)
     job.svgPath || path.join(path.dirname(safeOriginalPath), 'vector.svg'),
   );
 
-  const processingMs = await runVectorization(safeOriginalPath, safeSvgPath, mergedSettings);
+  const { processingMs, engine } = await runVectorization(
+    jobId,
+    safeOriginalPath,
+    safeSvgPath,
+    mergedSettings,
+  );
 
   const updated = await prisma.vectorJob.update({
     where: { id: job.id },
@@ -410,33 +304,102 @@ const reprocessJob = async (jobId: string, rawSettings: Partial<VectorSettings>)
 
   return {
     ...updated,
+    engine,
     preview,
   };
 };
 
-const downloadSvgFile = async (jobId: string, userId: string) => {
-  const job = await prisma.$transaction(async (tx) => {
-    const foundJob = await tx.vectorJob.findUnique({
-      where: { id: jobId },
-      select: {
-        id: true,
-        originalName: true,
-        status: true,
-        svgPath: true,
-      },
+const renderPdfFromSvg = (svg: string, width: number, height: number): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    const doc = new PDFDocument({
+      size: [Math.max(1, width), Math.max(1, height)],
+      margin: 0,
     });
+    const chunks: Buffer[] = [];
+    doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', (err: Error) => reject(err));
 
-    if (!foundJob) {
-      throw new AppError(httpStatus.NOT_FOUND, 'Vector job not found');
-    }
+    SVGtoPDF(doc, svg, 0, 0, {
+      width,
+      height,
+      assumePt: true,
+    });
+    doc.end();
+  });
 
-    if (foundJob.status !== 'COMPLETED' || !foundJob.svgPath) {
-      throw new AppError(httpStatus.BAD_REQUEST, 'Vector file is not ready for download');
-    }
+const exportVectorFile = async (
+  jobId: string,
+  userId: string,
+  format: ExportFormat = 'svg',
+  scale = 2,
+) => {
+  const foundJob = await prisma.vectorJob.findUnique({
+    where: { id: jobId },
+    select: {
+      id: true,
+      userId: true,
+      originalName: true,
+      width: true,
+      height: true,
+      status: true,
+      svgPath: true,
+    },
+  });
 
+  if (!foundJob) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Vector job not found');
+  }
+
+  assertJobAccess(foundJob.userId, userId);
+
+  if (foundJob.status !== 'COMPLETED' || !foundJob.svgPath) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Vector file is not ready for download');
+  }
+
+  const safePath = resolveSafeStoragePath(foundJob.svgPath);
+  await fs.access(safePath).catch(() => {
+    throw new AppError(httpStatus.NOT_FOUND, 'Generated SVG file not found');
+  });
+
+  const baseName = sanitizeDownloadBasename(foundJob.originalName);
+  const svgBuffer = await fs.readFile(safePath);
+
+  let outputBuffer: Buffer;
+  let mimeType: string;
+  let fileName: string;
+
+  if (format === 'png') {
+    const targetWidth = Math.max(1, foundJob.width * scale);
+    const targetHeight = Math.max(1, foundJob.height * scale);
+    outputBuffer = await sharp(svgBuffer, {
+      density: 72 * scale,
+      limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+    })
+      .resize(targetWidth, targetHeight)
+      .png()
+      .toBuffer();
+    mimeType = 'image/png';
+    fileName = `${baseName}-${scale}x.png`;
+  } else if (format === 'pdf') {
+    outputBuffer = await renderPdfFromSvg(
+      svgBuffer.toString('utf8'),
+      foundJob.width,
+      foundJob.height,
+    );
+    mimeType = 'application/pdf';
+    fileName = `${baseName}.pdf`;
+  } else {
+    outputBuffer = svgBuffer;
+    mimeType = 'image/svg+xml';
+    fileName = `${baseName}.svg`;
+  }
+
+  // Charge export credit and claim guest job only after artifact generation succeeds
+  await prisma.$transaction(async (tx) => {
     const user = await tx.user.findUnique({
       where: { id: userId },
-      select: { id: true, plan: true, credits: true },
+      select: { id: true, plan: true },
     });
 
     if (!user) {
@@ -453,22 +416,23 @@ const downloadSvgFile = async (jobId: string, userId: string) => {
         throw new AppError(
           httpStatus.FORBIDDEN,
           'Insufficient credits. Please upgrade to PRO or API plan to download.',
+          'INSUFFICIENT_CREDITS',
         );
       }
     }
 
-    return foundJob;
+    if (!foundJob.userId) {
+      await tx.vectorJob.updateMany({
+        where: { id: foundJob.id, userId: null },
+        data: { userId },
+      });
+    }
   });
 
-  const safePath = resolveSafeStoragePath(job.svgPath!);
-  await fs.access(safePath).catch(() => {
-    throw new AppError(httpStatus.NOT_FOUND, 'Generated SVG file not found');
-  });
-
-  const baseName = path.parse(job.originalName).name || 'vectorized';
   return {
-    filePath: safePath,
-    fileName: `${baseName}.svg`,
+    buffer: outputBuffer,
+    mimeType,
+    fileName,
   };
 };
 
@@ -477,5 +441,7 @@ export const vectorizerService = {
   getOriginalImageFile,
   getPreviewData,
   reprocessJob,
-  downloadSvgFile,
+  exportVectorFile,
+  runVectorization,
+  parseSvgPreview,
 };

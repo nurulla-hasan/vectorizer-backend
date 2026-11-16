@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import config from '../../config/index';
 import { passport } from '../../config/passport';
 import { auth } from '../../middlewares/auth';
@@ -20,22 +21,39 @@ import {
 
 export const authRouter = Router();
 
-authRouter.post('/register', validate(registerSchema), authController.registerUser);
+const authAttemptLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 15,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    success: false,
+    statusCode: 429,
+    message: 'Too many authentication attempts. Please try again in 15 minutes.',
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many authentication attempts. Please try again in 15 minutes.',
+    },
+  },
+});
 
-authRouter.post('/verify-email', validate(verifyEmailSchema), authController.verifyEmail);
+authRouter.post('/register', authAttemptLimiter, validate(registerSchema), authController.registerUser);
 
-authRouter.post('/resend-otp', validate(resendOtpSchema), authController.resendVerificationOtp);
+authRouter.post('/verify-email', authAttemptLimiter, validate(verifyEmailSchema), authController.verifyEmail);
 
-authRouter.post('/forgot-password', validate(forgotPasswordSchema), authController.forgotPassword);
+authRouter.post('/resend-otp', authAttemptLimiter, validate(resendOtpSchema), authController.resendVerificationOtp);
 
-authRouter.post('/resend-reset-otp', validate(resendResetOtpSchema), authController.resendResetOtp);
+authRouter.post('/forgot-password', authAttemptLimiter, validate(forgotPasswordSchema), authController.forgotPassword);
 
-authRouter.post('/verify-reset-otp', validate(verifyResetOtpSchema), authController.verifyResetOtp);
+authRouter.post('/resend-reset-otp', authAttemptLimiter, validate(resendResetOtpSchema), authController.resendResetOtp);
 
-authRouter.post('/reset-password', validate(resetPasswordSchema), authController.resetPassword);
+authRouter.post('/verify-reset-otp', authAttemptLimiter, validate(verifyResetOtpSchema), authController.verifyResetOtp);
+
+authRouter.post('/reset-password', authAttemptLimiter, validate(resetPasswordSchema), authController.resetPassword);
 
 authRouter.post(
   '/login',
+  authAttemptLimiter,
   validate(loginSchema),
   authController.loginUserWithPassport,
   authController.loginUser,

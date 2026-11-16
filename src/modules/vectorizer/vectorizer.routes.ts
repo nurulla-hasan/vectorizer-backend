@@ -14,12 +14,13 @@ vectorizerRouter.post(
   vectorizerController.processImage,
 );
 
-vectorizerRouter.get('/:id/original', vectorizerController.getOriginalImage);
+vectorizerRouter.get('/:id/original', optionalAuth, vectorizerController.getOriginalImage);
 
-vectorizerRouter.get('/:id/preview', vectorizerController.getPreview);
+vectorizerRouter.get('/:id/preview', optionalAuth, vectorizerController.getPreview);
 
 vectorizerRouter.post(
   '/:id/reprocess',
+  optionalAuth,
   validate(reprocessVectorSchema),
   vectorizerController.reprocess,
 );

@@ -1,4 +1,5 @@
 import type { ErrorRequestHandler } from 'express';
+import multer from 'multer';
 import { ZodError } from 'zod';
 import config from '../config/index';
 import { AppError } from '../utils/app-error.js';
@@ -12,6 +13,16 @@ export const globalErrorHandler: ErrorRequestHandler = (error: unknown, _req, re
 
   if (error instanceof AppError) {
     ({ statusCode, code, message, details } = error);
+  } else if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      statusCode = 413;
+      code = 'FILE_TOO_LARGE';
+      message = 'Uploaded file exceeds the 5 MB limit.';
+    } else {
+      statusCode = 400;
+      code = error.code;
+      message = error.message;
+    }
   } else if (error instanceof ZodError) {
     statusCode = 422;
     code = 'VALIDATION_ERROR';
