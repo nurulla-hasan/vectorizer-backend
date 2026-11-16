@@ -104,20 +104,16 @@ const processImage = async (
   let jobCreated = false;
 
   try {
-    let pipeline = sharp(file.buffer, {
+    const info = await sharp(file.buffer, {
       limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
     })
       .rotate()
       .resize(MAX_DIMENSION, MAX_DIMENSION, {
         fit: 'inside',
         withoutEnlargement: true,
-      });
-
-    if (settings.filterSpeckle >= 8) {
-      pipeline = pipeline.median(3);
-    }
-
-    const info = await pipeline.png().toFile(originalPath);
+      })
+      .png()
+      .toFile(originalPath);
     const width = info.width;
     const height = info.height;
 

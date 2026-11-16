@@ -8,13 +8,21 @@ import potrace from 'potrace';
 import sharp from 'sharp';
 import { optimize as optimizeSvg } from 'svgo';
 import SVGPathCommander from 'svg-path-commander';
+import {
+  detectTwoPoleField,
+  traceSubpixelTwoPoleSvg,
+} from './subpixel-tracer.js';
 import type { VectorSettings } from './vectorizer.validation.js';
 
 const execFileAsync = promisify(execFile);
 
 export const SHARP_LIMIT_INPUT_PIXELS = 25_000_000;
 
-export type VectorEngine = 'vtracer-native' | 'potrace-bezier' | 'imagetracerjs';
+export type VectorEngine =
+  | 'vtracer-native'
+  | 'subpixel-bezier'
+  | 'potrace-bezier'
+  | 'imagetracerjs';
 
 export interface VectorPathItem {
   id: string;
@@ -314,6 +322,34 @@ const tryPrimaryVectorizer = async (
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
+
+    // Step 1A: Sub-pixel iso-contour + corner-sharpened Schneider Bezier tracer for 2-pole/monochrome art
+    const twoPole =
+      settings.mode !== 'pixel'
+        ? detectTwoPoleField(
+            origRaw,
+            origInfo.width,
+            origInfo.height,
+            settings.colorPrecision,
+          )
+        : null;
+
+    if (twoPole) {
+      const subpixelSvg = traceSubpixelTwoPoleSvg(
+        twoPole,
+        origInfo.width,
+        origInfo.height,
+        settings,
+      );
+      await fs.writeFile(outputPath, subpixelSvg, 'utf8');
+      return {
+        success: true,
+        engine: 'subpixel-bezier',
+        traceWidth: origInfo.width,
+        traceHeight: origInfo.height,
+        scaleFactor: 1,
+      };
+    }
 
     const palette = extractInteriorPalette(origRaw, origInfo.width, origInfo.height, targetColors);
 
@@ -737,7 +773,7 @@ export const runVectorization = async (
       primaryRes.traceWidth,
       primaryRes.traceHeight,
       primaryRes.scaleFactor,
-      primaryRes.engine !== 'potrace-bezier',
+      primaryRes.engine !== 'potrace-bezier' && primaryRes.engine !== 'subpixel-bezier',
     );
     await fs.writeFile(svgPath, optimized, 'utf8');
   } else {
@@ -754,7 +790,12 @@ export const runVectorization = async (
 export const readStoredEngine = async (svgPath: string): Promise<VectorEngine> => {
   try {
     const val = (await fs.readFile(path.join(path.dirname(svgPath), 'engine.txt'), 'utf8')).trim();
-    if (val === 'vtracer-native' || val === 'potrace-bezier' || val === 'imagetracerjs') {
+    if (
+      val === 'vtracer-native' ||
+      val === 'subpixel-bezier' ||
+      val === 'potrace-bezier' ||
+      val === 'imagetracerjs'
+    ) {
       return val;
     }
   } catch {
