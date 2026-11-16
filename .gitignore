@@ -1,0 +1,10 @@
+node_modules
+dist
+generated
+.env
+*.log
+
+
+.vercel
+pnpm-lock.yaml
+pnpm-workspace.yaml
