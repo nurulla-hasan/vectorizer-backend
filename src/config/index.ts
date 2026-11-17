@@ -32,4 +32,7 @@ export default {
   cloudinary_cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   cloudinary_api_key: process.env.CLOUDINARY_API_KEY,
   cloudinary_api_secret: process.env.CLOUDINARY_API_SECRET,
+  payment_bkash_number: process.env.PAYMENT_BKASH_NUMBER || '',
+  payment_nagad_number: process.env.PAYMENT_NAGAD_NUMBER || '',
+  payment_rocket_number: process.env.PAYMENT_ROCKET_NUMBER || '',
 };

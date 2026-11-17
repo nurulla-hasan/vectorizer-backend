@@ -16,11 +16,27 @@ enum AuthProvider {
 enum UserPlan {
   FREE
   PRO
-  API
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
 }
 
 enum VectorJobStatus {
   PROCESSING
   COMPLETED
   FAILED
+}
+
+enum PaymentProvider {
+  BKASH
+  NAGAD
+  ROCKET
+}
+
+enum PaymentStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }

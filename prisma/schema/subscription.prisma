@@ -1,0 +1,23 @@
+model PaymentRequest {
+  id            String          @id @default(uuid())
+  userId        String          @map("user_id")
+  plan          UserPlan
+  billingCycle  BillingCycle    @default(MONTHLY) @map("billing_cycle")
+  provider      PaymentProvider
+  amount        Int
+  senderNumber  String          @map("sender_number")
+  transactionId String          @map("transaction_id")
+  status        PaymentStatus   @default(PENDING)
+  adminNote     String          @default("") @map("admin_note")
+  reviewedBy    String?         @map("reviewed_by")
+  reviewedAt    DateTime?       @map("reviewed_at")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, transactionId])
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@map("payment_requests")
+}

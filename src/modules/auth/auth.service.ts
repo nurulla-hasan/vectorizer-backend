@@ -8,6 +8,7 @@ import { sendPasswordResetEmail, sendVerificationEmail } from '../../lib/email';
 import { prisma } from '../../lib/prisma';
 import { AppError } from '../../utils/app-error';
 import { jwtUtils } from '../../utils/jwt';
+import { PLAN_CATALOG } from '../subscription/subscription.constants';
 
 import type { IRegisterUser } from './auth.types';
 import type {
@@ -191,10 +192,13 @@ const getMeFromDB = async (userId: string) => {
   }
 
   const { password, googleId, imagePublicId, ...safeUser } = user;
+  const plan = PLAN_CATALOG[user.plan];
 
   return {
     ...safeUser,
     hasPassword: Boolean(password),
+    creditsLimit: plan.creditsLimit,
+    unlimited: plan.unlimited,
   };
 };
 

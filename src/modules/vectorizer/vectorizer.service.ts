@@ -433,7 +433,7 @@ const exportVectorFile = async (
       if (updated.count === 0) {
         throw new AppError(
           httpStatus.FORBIDDEN,
-          'Insufficient credits. Please upgrade to PRO or API plan to download.',
+          'Insufficient credits. Please upgrade to the PRO plan to download.',
           'INSUFFICIENT_CREDITS',
         );
       }
