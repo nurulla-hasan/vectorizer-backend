@@ -8,6 +8,7 @@ import potrace from 'potrace';
 import sharp from 'sharp';
 import { optimize as optimizeSvg } from 'svgo';
 import SVGPathCommander from 'svg-path-commander';
+import { cleanupStaircaseSegments } from './staircase-cleanup.js';
 import { detectTwoPoleField } from './subpixel-tracer.js';
 import type { VectorSettings } from './vectorizer.validation.js';
 
@@ -899,6 +900,7 @@ const simplifyPathD = (
   scaleFactor = 1,
   preTranslateX = 0,
   preTranslateY = 0,
+  smoothStaircase = true,
 ): string => {
   try {
     let commander = new SVGPathCommander(d);
@@ -911,7 +913,8 @@ const simplifyPathD = (
       commander = commander.transform({ scale: [1 / scaleFactor, 1 / scaleFactor] });
     }
     const abs = SVGPathCommander.pathToAbsolute(commander.toString());
-    const optimized = SVGPathCommander.optimizePath(abs);
+    const cleaned = smoothStaircase ? cleanupStaircaseSegments(abs) : abs;
+    const optimized = SVGPathCommander.optimizePath(cleaned);
     const rounded = SVGPathCommander.roundPath(optimized, 3);
     return SVGPathCommander.pathToString(rounded);
   } catch {
@@ -924,6 +927,7 @@ const optimizeVectorSvg = (
   displayWidth: number,
   displayHeight: number,
   scaleFactor = 1,
+  smoothStaircase = true,
 ): string => {
   const fullCanvasRectPrefix = `M0 0H${displayWidth * scaleFactor}V${displayHeight * scaleFactor}H0Z`;
   const scaledRaw = rawSvg.replace(
@@ -946,7 +950,7 @@ const optimizeVectorSvg = (
           ty === 0);
       const nextD = isFullBgRect
         ? `M0 0H${displayWidth}V${displayHeight}H0Z`
-        : simplifyPathD(origD, scaleFactor, tx, ty);
+        : simplifyPathD(origD, scaleFactor, tx, ty, smoothStaircase);
 
       const cleanedAttrs = rawAttrs
         .replace(/\s*\btransform="[^"]*"/i, '')
@@ -1020,7 +1024,13 @@ const traceAndOptimizeSvg = async (
     rawSvg = await traceWithPotracePosterizer(pngBuffer, settings);
   }
 
-  const optimizedSvg = optimizeVectorSvg(rawSvg, info.width, info.height, 1);
+  const optimizedSvg = optimizeVectorSvg(
+    rawSvg,
+    info.width,
+    info.height,
+    1,
+    settings.mode !== 'pixel',
+  );
   await fs.writeFile(outputPath, optimizedSvg, 'utf8');
 };
 
@@ -1054,6 +1064,7 @@ export const runVectorization = async (
       origWidth,
       origHeight,
       primaryRes.scaleFactor,
+      settings.mode !== 'pixel',
     );
     await fs.writeFile(svgPath, optimized, 'utf8');
   } else {
