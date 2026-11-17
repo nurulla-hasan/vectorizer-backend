@@ -32,7 +32,7 @@ const editedSvgSchema = z
 export const saveEditedSvgSchema = z.object({ svg: editedSvgSchema });
 
 export const exportQuerySchema = z.object({
-  format: z.enum(['svg', 'png', 'pdf']).default('svg'),
+  format: z.enum(['svg', 'png', 'pdf', 'eps', 'dxf']).default('svg'),
   scale: z.coerce
     .number()
     .int()

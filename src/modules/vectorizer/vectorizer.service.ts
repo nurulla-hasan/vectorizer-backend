@@ -8,6 +8,7 @@ import SVGtoPDF from 'svg-to-pdfkit';
 import type { Prisma } from '../../../generated/prisma/client.js';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../utils/app-error.js';
+import { renderDxfFromSvg, renderEpsFromSvg } from './vector-formats.js';
 import {
   parseSvgPreview,
   readStoredEngine,
@@ -407,6 +408,22 @@ const exportVectorFile = async (
     );
     mimeType = 'application/pdf';
     fileName = `${baseName}.pdf`;
+  } else if (format === 'eps') {
+    outputBuffer = renderEpsFromSvg(
+      svgBuffer.toString('utf8'),
+      foundJob.width,
+      foundJob.height,
+    );
+    mimeType = 'application/postscript';
+    fileName = `${baseName}.eps`;
+  } else if (format === 'dxf') {
+    outputBuffer = renderDxfFromSvg(
+      svgBuffer.toString('utf8'),
+      foundJob.width,
+      foundJob.height,
+    );
+    mimeType = 'application/dxf';
+    fileName = `${baseName}.dxf`;
   } else {
     outputBuffer = svgBuffer;
     mimeType = 'image/svg+xml';
