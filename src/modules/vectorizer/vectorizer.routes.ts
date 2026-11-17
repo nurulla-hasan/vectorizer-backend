@@ -3,7 +3,7 @@ import { upload } from '../../lib/multer.js';
 import { auth, optionalAuth } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
 import { vectorizerController } from './vectorizer.controller.js';
-import { reprocessVectorSchema } from './vectorizer.validation.js';
+import { reprocessVectorSchema, saveEditedSvgSchema } from './vectorizer.validation.js';
 
 export const vectorizerRouter = Router();
 
@@ -23,6 +23,13 @@ vectorizerRouter.post(
   optionalAuth,
   validate(reprocessVectorSchema),
   vectorizerController.reprocess,
+);
+
+vectorizerRouter.put(
+  '/:id/svg',
+  optionalAuth,
+  validate(saveEditedSvgSchema),
+  vectorizerController.saveSvg,
 );
 
 vectorizerRouter.get('/:id/download', auth(), vectorizerController.downloadSvg);

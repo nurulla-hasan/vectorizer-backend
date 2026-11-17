@@ -57,6 +57,22 @@ const reprocess = catchAsync(async (req, res) => {
   });
 });
 
+const saveSvg = catchAsync(async (req, res) => {
+  const jobId = getJobId(req.params.id);
+  const result = await vectorizerService.saveEditedSvg(
+    jobId,
+    String(req.body?.svg ?? ''),
+    req.user?.id,
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: 'Vector edits saved successfully',
+    data: result,
+  });
+});
+
 const downloadSvg = catchAsync(async (req, res) => {
   if (!req.user?.id) {
     throw new AppError(httpStatus.UNAUTHORIZED, 'Authentication required');
@@ -82,5 +98,6 @@ export const vectorizerController = {
   getOriginalImage,
   getPreview,
   reprocess,
+  saveSvg,
   downloadSvg,
 };

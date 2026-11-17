@@ -305,6 +305,28 @@ const reprocessJob = async (
   };
 };
 
+const saveEditedSvg = async (jobId: string, svg: string, requestUserId?: string) => {
+  const job = await prisma.vectorJob.findUnique({
+    where: { id: jobId },
+    select: { id: true, userId: true, status: true, svgPath: true },
+  });
+
+  if (!job) {
+    throw new AppError(httpStatus.NOT_FOUND, 'Vector job not found');
+  }
+
+  assertJobAccess(job.userId, requestUserId);
+
+  if (job.status !== 'COMPLETED' || !job.svgPath) {
+    throw new AppError(httpStatus.BAD_REQUEST, 'Vector file is not ready to edit');
+  }
+
+  const safeSvgPath = resolveSafeStoragePath(job.svgPath);
+  await fs.writeFile(safeSvgPath, svg, 'utf8');
+
+  return { id: job.id };
+};
+
 const renderPdfFromSvg = (svg: string, width: number, height: number): Promise<Buffer> =>
   new Promise((resolve, reject) => {
     const doc = new PDFDocument({
@@ -437,6 +459,7 @@ export const vectorizerService = {
   getOriginalImageFile,
   getPreviewData,
   reprocessJob,
+  saveEditedSvg,
   exportVectorFile,
   runVectorization,
   parseSvgPreview,
