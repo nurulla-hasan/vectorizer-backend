@@ -8,7 +8,12 @@ import SVGtoPDF from 'svg-to-pdfkit';
 import type { Prisma } from '../../../generated/prisma/client.js';
 import { prisma } from '../../lib/prisma.js';
 import { AppError } from '../../utils/app-error.js';
-import { renderDxfFromSvg, renderEpsFromSvg } from './vector-formats.js';
+import {
+  applySvgExportOptions,
+  EXPORT_PRESET_OPTIONS,
+  renderDxfFromSvg,
+  renderEpsFromSvg,
+} from './vector-formats.js';
 import {
   parseSvgPreview,
   readStoredEngine,
@@ -20,6 +25,7 @@ import {
 } from './vectorizer.engine.js';
 import {
   type ExportFormat,
+  type ExportStyle,
   type VectorSettings,
   vectorSettingsSchema,
 } from './vectorizer.validation.js';
@@ -132,12 +138,7 @@ const processImage = async (
     });
     jobCreated = true;
 
-    const { processingMs, engine } = await runVectorization(
-      jobId,
-      originalPath,
-      svgPath,
-      settings,
-    );
+    const { processingMs, engine } = await runVectorization(jobId, originalPath, svgPath, settings);
 
     const updatedJob = await prisma.vectorJob.update({
       where: { id: job.id },
@@ -352,6 +353,7 @@ const exportVectorFile = async (
   userId: string,
   format: ExportFormat = 'svg',
   scale = 2,
+  preset: ExportStyle = 'general',
 ) => {
   const foundJob = await prisma.vectorJob.findUnique({
     where: { id: jobId },
@@ -382,7 +384,11 @@ const exportVectorFile = async (
   });
 
   const baseName = sanitizeDownloadBasename(foundJob.originalName);
-  const svgBuffer = await fs.readFile(safePath);
+  const styledSvg = applySvgExportOptions(
+    await fs.readFile(safePath, 'utf8'),
+    EXPORT_PRESET_OPTIONS[preset],
+  );
+  const svgBuffer = Buffer.from(styledSvg, 'utf8');
 
   let outputBuffer: Buffer;
   let mimeType: string;
@@ -409,19 +415,11 @@ const exportVectorFile = async (
     mimeType = 'application/pdf';
     fileName = `${baseName}.pdf`;
   } else if (format === 'eps') {
-    outputBuffer = renderEpsFromSvg(
-      svgBuffer.toString('utf8'),
-      foundJob.width,
-      foundJob.height,
-    );
+    outputBuffer = renderEpsFromSvg(svgBuffer.toString('utf8'), foundJob.width, foundJob.height);
     mimeType = 'application/postscript';
     fileName = `${baseName}.eps`;
   } else if (format === 'dxf') {
-    outputBuffer = renderDxfFromSvg(
-      svgBuffer.toString('utf8'),
-      foundJob.width,
-      foundJob.height,
-    );
+    outputBuffer = renderDxfFromSvg(svgBuffer.toString('utf8'), foundJob.width, foundJob.height);
     mimeType = 'application/dxf';
     fileName = `${baseName}.dxf`;
   } else {

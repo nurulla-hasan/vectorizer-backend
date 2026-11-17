@@ -24,6 +24,50 @@ interface ParsedSvg {
   shapes: ExportShape[];
 }
 
+export type ExportStyle = 'general' | 'editing' | 'cutting';
+
+export interface SvgExportOptions {
+  drawStyle: 'fill' | 'stroke';
+  gapFiller: boolean;
+}
+
+export const EXPORT_PRESET_OPTIONS: Record<ExportStyle, SvgExportOptions> = {
+  general: { drawStyle: 'fill', gapFiller: true },
+  editing: { drawStyle: 'fill', gapFiller: false },
+  cutting: { drawStyle: 'stroke', gapFiller: false },
+};
+
+const pathTagRegex = /<path\b([^>]*?)(\/?)>/gi;
+
+/**
+ * Rewrites path presentation for export presets. Gap filler draws a hairline
+ * stroke in the shape's own fill colour beneath the fill (`paint-order`), which
+ * hides anti-aliasing seams between adjacent shapes. Stroke style keeps the
+ * same contours but renders them as outlines for cutting/engraving workflows.
+ */
+export const applySvgExportOptions = (svg: string, options: SvgExportOptions): string => {
+  if (options.drawStyle === 'stroke') {
+    return svg.replace(pathTagRegex, (full, attrs: string, selfClose: string) => {
+      const fill = attrs.match(/\bfill=["']([^"']+)["']/i)?.[1];
+      if (!fill || fill === 'none') return full;
+      const cleaned = attrs
+        .replace(/\bfill=["'][^"']*["']/i, 'fill="none"')
+        .replace(/\s*\bstroke=["'][^"']*["']/gi, '')
+        .replace(/\s*\bstroke-width=["'][^"']*["']/gi, '');
+      return `<path${cleaned} stroke="${fill}" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"${selfClose}>`;
+    });
+  }
+
+  if (!options.gapFiller) return svg;
+
+  return svg.replace(pathTagRegex, (full, attrs: string, selfClose: string) => {
+    const fill = attrs.match(/\bfill=["']([^"']+)["']/i)?.[1];
+    if (!fill || fill === 'none') return full;
+    if (/\bstroke=/i.test(attrs) || /\bpaint-order=/i.test(attrs)) return full;
+    return `<path${attrs} stroke="${fill}" stroke-width="1" stroke-linejoin="round" paint-order="stroke"${selfClose}>`;
+  });
+};
+
 const HEX_COLOR = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
 
 const parseColor = (value: string | undefined): Rgb | null => {

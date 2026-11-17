@@ -312,12 +312,15 @@ const snapSvgFillsToPalette = (
  * Extract up to `maxColors` dominant solid RGB colors strictly from interior flat pixels
  * (pixels whose 4 immediate cardinal neighbors are within Euclidean RGB distance < 18),
  * eliminating anti-aliased edge gradient halos before clustering and color snapping.
+ * `mergeDistance` comes from the Color Precision setting: higher precision keeps
+ * closely related shades (e.g. dark outline vs body fill) as separate clusters.
  */
 const extractInteriorPalette = (
   rgba: Buffer,
   width: number,
   height: number,
   maxColors: number,
+  mergeDistance: number,
 ): Array<[number, number, number]> => {
   const flatSamples: Array<[number, number, number]> = [];
   const allOpaqueSamples: Array<[number, number, number]> = [];
@@ -381,7 +384,7 @@ const extractInteriorPalette = (
   const significant = sorted.filter((b) => b.count >= minClusterCount);
   const pool = significant.length >= 2 ? significant : sorted;
 
-  const mergeDistSq = 42 * 42;
+  const mergeDistSq = mergeDistance * mergeDistance;
   const clusters: Array<{
     count: number;
     sr: number;
@@ -628,7 +631,15 @@ const tryPrimaryVectorizer = async (
       ? twoPole.hasTransparentBg
         ? [twoPole.fgRgb]
         : [twoPole.bgRgb, twoPole.fgRgb]
-      : extractInteriorPalette(paletteRaw, paletteWidth, paletteHeight, targetColors);
+      : extractInteriorPalette(
+          paletteRaw,
+          paletteWidth,
+          paletteHeight,
+          targetColors,
+          // Higher Color Precision keeps near shades apart instead of collapsing
+          // dark line art into the body fill; lower precision merges more aggressively.
+          Math.max(20, Math.min(56, 60 - settings.colorPrecision * 6)),
+        );
 
     // 4x AI super-resolution (or CPU Lanczos3 + deblur sharpen + local crevice ridge enhancement fallback)
     const {

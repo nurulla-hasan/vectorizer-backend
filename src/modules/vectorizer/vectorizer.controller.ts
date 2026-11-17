@@ -2,6 +2,7 @@ import httpStatus from 'http-status';
 import { AppError } from '../../utils/app-error.js';
 import { catchAsync } from '../../utils/catch-async.js';
 import { sendResponse } from '../../utils/send-response.js';
+import { fetchImageFromUrl } from './url-import.js';
 import { vectorizerService } from './vectorizer.service.js';
 import { exportQuerySchema, vectorJobIdSchema } from './vectorizer.validation.js';
 
@@ -20,6 +21,27 @@ const processImage = catchAsync(async (req, res) => {
     statusCode: httpStatus.CREATED,
     success: true,
     message: 'Image vectorized successfully',
+    data: result,
+  });
+});
+
+const importFromUrl = catchAsync(async (req, res) => {
+  const { url, ...rawSettings } = req.body ?? {};
+  const imported = await fetchImageFromUrl(String(url));
+  const result = await vectorizerService.processImage(
+    {
+      buffer: imported.buffer,
+      originalname: imported.filename,
+      mimetype: imported.mimeType,
+    } as Express.Multer.File,
+    rawSettings,
+    req.user?.id,
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: 'Image imported and vectorized successfully',
     data: result,
   });
 });
@@ -79,12 +101,13 @@ const downloadSvg = catchAsync(async (req, res) => {
   }
 
   const jobId = getJobId(req.params.id);
-  const { format, scale } = exportQuerySchema.parse(req.query);
+  const { format, scale, preset } = exportQuerySchema.parse(req.query);
   const { buffer, mimeType, fileName } = await vectorizerService.exportVectorFile(
     jobId,
     req.user.id,
     format,
     scale,
+    preset,
   );
 
   res.setHeader('Content-Type', mimeType);
@@ -95,6 +118,7 @@ const downloadSvg = catchAsync(async (req, res) => {
 
 export const vectorizerController = {
   processImage,
+  importFromUrl,
   getOriginalImage,
   getPreview,
   reprocess,

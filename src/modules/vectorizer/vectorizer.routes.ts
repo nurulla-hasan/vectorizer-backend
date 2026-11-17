@@ -3,7 +3,11 @@ import { upload } from '../../lib/multer.js';
 import { auth, optionalAuth } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
 import { vectorizerController } from './vectorizer.controller.js';
-import { reprocessVectorSchema, saveEditedSvgSchema } from './vectorizer.validation.js';
+import {
+  importUrlSchema,
+  reprocessVectorSchema,
+  saveEditedSvgSchema,
+} from './vectorizer.validation.js';
 
 export const vectorizerRouter = Router();
 
@@ -12,6 +16,13 @@ vectorizerRouter.post(
   optionalAuth,
   upload.single('image'),
   vectorizerController.processImage,
+);
+
+vectorizerRouter.post(
+  '/import-url',
+  optionalAuth,
+  validate(importUrlSchema),
+  vectorizerController.importFromUrl,
 );
 
 vectorizerRouter.get('/:id/original', optionalAuth, vectorizerController.getOriginalImage);

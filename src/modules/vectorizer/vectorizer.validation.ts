@@ -14,16 +14,17 @@ export const vectorJobIdSchema = z.string().uuid('Invalid vector job ID');
 export const processVectorSchema = vectorSettingsSchema.partial();
 export const reprocessVectorSchema = vectorSettingsSchema.partial();
 
+export const importUrlSchema = vectorSettingsSchema.partial().extend({
+  url: z.string().trim().min(1, 'Image URL is required').max(4096),
+});
+
 const editedSvgSchema = z
   .string()
   .min(1)
   .max(8_000_000)
   .refine((svg) => /^<svg[\s>]/i.test(svg.trim()), 'Expected an SVG document')
   .refine((svg) => !/<script\b/i.test(svg), 'Scripts are not allowed in edited SVG')
-  .refine(
-    (svg) => !/<foreignObject\b/i.test(svg),
-    'foreignObject is not allowed in edited SVG',
-  )
+  .refine((svg) => !/<foreignObject\b/i.test(svg), 'foreignObject is not allowed in edited SVG')
   .refine(
     (svg) => !/\bon\w+\s*=/i.test(svg),
     'Event handler attributes are not allowed in edited SVG',
@@ -40,7 +41,9 @@ export const exportQuerySchema = z.object({
       message: 'Scale must be 1, 2, or 4',
     })
     .default(2),
+  preset: z.enum(['general', 'editing', 'cutting']).default('general'),
 });
 
 export type VectorSettings = z.infer<typeof vectorSettingsSchema>;
 export type ExportFormat = z.infer<typeof exportQuerySchema>['format'];
+export type ExportStyle = z.infer<typeof exportQuerySchema>['preset'];
