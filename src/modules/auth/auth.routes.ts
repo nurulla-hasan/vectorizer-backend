@@ -79,7 +79,7 @@ authRouter.get(
   '/google/callback',
   authController.verifyGoogleLoginState,
   passport.authenticate('google', {
-    failureRedirect: `${config.frontend_url || 'http://localhost:3000'}/login?error=google_auth_failed`,
+    failureRedirect: `${config.frontend_url || 'http://localhost:3000'}/auth/login?error=google_auth_failed`,
     session: false,
   }),
   authController.googleLoginCallback,
