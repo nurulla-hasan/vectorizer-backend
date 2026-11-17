@@ -8,10 +8,7 @@ import potrace from 'potrace';
 import sharp from 'sharp';
 import { optimize as optimizeSvg } from 'svgo';
 import SVGPathCommander from 'svg-path-commander';
-import {
-  detectTwoPoleField,
-  traceSubpixelTwoPoleSvg,
-} from './subpixel-tracer.js';
+import { detectTwoPoleField } from './subpixel-tracer.js';
 import type { VectorSettings } from './vectorizer.validation.js';
 
 const execFileAsync = promisify(execFile);
@@ -19,6 +16,8 @@ const execFileAsync = promisify(execFile);
 export const SHARP_LIMIT_INPUT_PIXELS = 25_000_000;
 
 export type VectorEngine =
+  | 'ai-vtracer-native'
+  | 'ai-potrace-bezier'
   | 'vtracer-native'
   | 'subpixel-bezier'
   | 'potrace-bezier'
@@ -57,6 +56,186 @@ const resolveVtracerBinary = (): string => {
   }
 
   return 'vtracer';
+};
+
+const resolveRealEsrganConfig = (): {
+  binary: string;
+  modelsDir: string;
+  modelName: string;
+} | null => {
+  if (process.env.REALESRGAN_DISABLED === '1') {
+    return null;
+  }
+
+  const binDir = path.resolve(process.cwd(), 'bin', 'realesrgan');
+  const defaultExe = path.join(
+    binDir,
+    process.platform === 'win32' ? 'realesrgan-ncnn-vulkan.exe' : 'realesrgan-ncnn-vulkan',
+  );
+  const binary = process.env.REALESRGAN_PATH || defaultExe;
+  if (!fsSync.existsSync(binary)) {
+    return null;
+  }
+
+  const modelsDir = path.join(path.dirname(binary), 'models');
+  if (!fsSync.existsSync(modelsDir)) {
+    return null;
+  }
+
+  const preferred = process.env.REALESRGAN_MODEL?.trim();
+  const candidates = preferred
+    ? [preferred]
+    : ['realesr-animevideov3-x4', 'realesrgan-x4plus-anime'];
+
+  const modelName = candidates.find(
+    (name) =>
+      fsSync.existsSync(path.join(modelsDir, `${name}.param`)) &&
+      fsSync.existsSync(path.join(modelsDir, `${name}.bin`)),
+  );
+  if (!modelName) {
+    return null;
+  }
+
+  return { binary, modelsDir, modelName };
+};
+
+/**
+ * Symmetric directional ridge/valley enhancement on 4x upscaled RGBA pixels.
+ * Pushes bright valleys trapped between two opposing dark strokes toward open white
+ * without disturbing open edges or closing narrow V-crevices.
+ */
+const enhanceLocalCrevices = (
+  rgba: Buffer,
+  width: number,
+  height: number,
+  radius = 4,
+): Buffer => {
+  const lum = new Float32Array(width * height);
+  for (let i = 0, p = 0; i < rgba.length; i += 4, p++) {
+    lum[p] = (0.299 * (rgba[i] ?? 0) + 0.587 * (rgba[i + 1] ?? 0) + 0.114 * (rgba[i + 2] ?? 0)) / 255;
+  }
+
+  const out = Buffer.from(rgba);
+  const dirs: ReadonlyArray<readonly [number, number]> = [
+    [radius, 0],
+    [0, radius],
+    [radius, radius],
+    [radius, -radius],
+  ];
+
+  for (let y = radius; y < height - radius; y++) {
+    for (let x = radius; x < width - radius; x++) {
+      const p = y * width + x;
+      const idx = p * 4;
+      if ((rgba[idx + 3] ?? 0) < 128) continue;
+
+      const c = lum[p]!;
+      if (c <= 0.08 || c >= 0.92) continue;
+
+      let bestRidge = 0;
+      let bestValley = 0;
+      for (const [dx, dy] of dirs) {
+        const a = lum[(y - dy) * width + (x - dx)]!;
+        const b = lum[(y + dy) * width + (x + dx)]!;
+        const wingMax = Math.max(a, b);
+        const wingMin = Math.min(a, b);
+        if (c > wingMax) {
+          bestRidge = Math.max(bestRidge, c - wingMax);
+        }
+        if (c < wingMin) {
+          bestValley = Math.max(bestValley, wingMin - c);
+        }
+      }
+
+      const delta = Math.round((bestRidge * 0.45 - bestValley * 0.35) * 255);
+      if (delta === 0) continue;
+
+      out[idx] = Math.max(0, Math.min(255, (rgba[idx] ?? 0) + delta));
+      out[idx + 1] = Math.max(0, Math.min(255, (rgba[idx + 1] ?? 0) + delta));
+      out[idx + 2] = Math.max(0, Math.min(255, (rgba[idx + 2] ?? 0) + delta));
+    }
+  }
+
+  return out;
+};
+
+const reconstruct4xGeometry = async (
+  originalPath: string,
+  tempAiPath: string,
+  origWidth: number,
+  origHeight: number,
+  shouldUpscale: boolean,
+): Promise<{
+  data: Buffer;
+  width: number;
+  height: number;
+  usedAi: boolean;
+}> => {
+  if (!shouldUpscale) {
+    const { data, info } = await sharp(originalPath, {
+      limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+    })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return { data, width: info.width, height: info.height, usedAi: false };
+  }
+
+  const aiConfig = resolveRealEsrganConfig();
+  if (aiConfig) {
+    try {
+      await execFileAsync(
+        aiConfig.binary,
+        [
+          '-i',
+          originalPath,
+          '-o',
+          tempAiPath,
+          '-n',
+          aiConfig.modelName,
+          '-s',
+          '4',
+          '-t',
+          '640',
+          '-m',
+          aiConfig.modelsDir,
+        ],
+        { timeout: 25_000 },
+      );
+
+      const { data, info } = await sharp(tempAiPath, {
+        limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+      })
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      if (info.width === origWidth * 4 && info.height === origHeight * 4) {
+        return { data, width: info.width, height: info.height, usedAi: true };
+      }
+    } catch (error) {
+      console.warn(
+        '[Vectorizer] Real-ESRGAN AI 4x unavailable/failed, using CPU sharpen + ridge enhancement:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  const { data, info } = await sharp(originalPath, {
+    limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+  })
+    .resize(origWidth * 4, origHeight * 4, { kernel: sharp.kernel.lanczos3 })
+    .sharpen({ sigma: 1.4, m1: 3.0, m2: 6.0 })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  return {
+    data: enhanceLocalCrevices(data, info.width, info.height, 4),
+    width: info.width,
+    height: info.height,
+    usedAi: false,
+  };
 };
 
 const rgbToHex = (rgb: readonly [number, number, number]): string =>
@@ -195,71 +374,58 @@ const runPotraceTrace = (
   });
 
 /**
- * Trace 1- or 2-color artwork directly with Potrace cubic Bezier curves.
- * Determines background vs foreground from border pixels so both light-on-dark and
- * dark-on-light drawings trace with zero anti-aliased concentric gray rings.
+ * Trace 1- or 2-color artwork with Potrace using a continuous grayscale coverage mask
+ * from the 4x Lanczos3 + blur(0.45) upscaled buffer so `threshold: 140` keeps narrow
+ * white crevices open and `alphaMax: 0.9` + `optTolerance: 0.12` preserves sharp cusps.
  */
-const traceWithPotraceDualColor = async (
-  snappedRaw: Buffer,
+const traceWithPotraceContinuous = async (
+  upscaledRaw: Buffer,
   traceWidth: number,
   traceHeight: number,
-  palette: Array<[number, number, number]>,
+  fgRgb: readonly [number, number, number],
+  bgRgb: readonly [number, number, number] | null,
   settings: VectorSettings,
-  scaleFactor: number,
 ): Promise<string> => {
-  let bgIndex = -1;
-  let fgIndex = 0;
-
-  if (palette.length === 2) {
-    const c0 = palette[0]!;
-    const borderCounts = [0, 0];
-    const totalCounts = [0, 0];
-
-    for (let y = 0; y < traceHeight; y++) {
-      for (let x = 0; x < traceWidth; x++) {
-        const idx = (y * traceWidth + x) * 4;
-        if ((snappedRaw[idx + 3] ?? 0) < 128) continue;
-
-        const r = snappedRaw[idx] ?? 0;
-        const g = snappedRaw[idx + 1] ?? 0;
-        const b = snappedRaw[idx + 2] ?? 0;
-        const idxMatch = r === c0[0] && g === c0[1] && b === c0[2] ? 0 : 1;
-
-        totalCounts[idxMatch]!++;
-        if (x === 0 || x === traceWidth - 1 || y === 0 || y === traceHeight - 1) {
-          borderCounts[idxMatch]!++;
-        }
-      }
-    }
-
-    bgIndex =
-      borderCounts[0]! !== borderCounts[1]!
-        ? borderCounts[0]! > borderCounts[1]!
-          ? 0
-          : 1
-        : totalCounts[0]! >= totalCounts[1]!
-          ? 0
-          : 1;
-    fgIndex = bgIndex === 0 ? 1 : 0;
-  }
-
-  const fgColor = palette[fgIndex]!;
-  const fgHex = rgbToHex(fgColor);
-
+  const fgHex = rgbToHex(fgRgb);
   const maskRgba = Buffer.allocUnsafe(traceWidth * traceHeight * 4);
-  for (let i = 0; i < snappedRaw.length; i += 4) {
-    const a = snappedRaw[i + 3] ?? 0;
-    const isFg =
-      a >= 128 &&
-      snappedRaw[i] === fgColor[0] &&
-      snappedRaw[i + 1] === fgColor[1] &&
-      snappedRaw[i + 2] === fgColor[2];
 
-    const v = isFg ? 0 : 255;
-    maskRgba[i] = v;
-    maskRgba[i + 1] = v;
-    maskRgba[i + 2] = v;
-    maskRgba[i + 3] = 255;
+  if (!bgRgb) {
+    // Transparent background: map alpha continuously [0..255] -> [255..0]
+    for (let i = 0; i < upscaledRaw.length; i += 4) {
+      const a = upscaledRaw[i + 3] ?? 0;
+      const v = 255 - a;
+      maskRgba[i] = v;
+      maskRgba[i + 1] = v;
+      maskRgba[i + 2] = v;
+      maskRgba[i + 3] = 255;
+    }
+  } else {
+    const vx = fgRgb[0] - bgRgb[0];
+    const vy = fgRgb[1] - bgRgb[1];
+    const vz = fgRgb[2] - bgRgb[2];
+    const vLenSq = vx * vx + vy * vy + vz * vz || 1;
+
+    for (let i = 0; i < upscaledRaw.length; i += 4) {
+      const a = upscaledRaw[i + 3] ?? 0;
+      if (a < 16) {
+        maskRgba[i] = 255;
+        maskRgba[i + 1] = 255;
+        maskRgba[i + 2] = 255;
+        maskRgba[i + 3] = 255;
+        continue;
+      }
+
+      const r = upscaledRaw[i] ?? 0;
+      const g = upscaledRaw[i + 1] ?? 0;
+      const b = upscaledRaw[i + 2] ?? 0;
+      const tRaw = ((r - bgRgb[0]) * vx + (g - bgRgb[1]) * vy + (b - bgRgb[2]) * vz) / vLenSq;
+      const t = Math.max(0, Math.min(1, tRaw));
+      const v = Math.round(255 * (1 - t));
+      maskRgba[i] = v;
+      maskRgba[i + 1] = v;
+      maskRgba[i + 2] = v;
+      maskRgba[i + 3] = 255;
+    }
   }
 
   const maskPng = await sharp(maskRgba, {
@@ -269,30 +435,71 @@ const traceWithPotraceDualColor = async (
     .toBuffer();
 
   const tracedSvg = await runPotraceTrace(maskPng, {
-    alphaMax: 1.25,
+    threshold: 148,
+    alphaMax: 0.85,
     optCurve: true,
-    optTolerance: 0.45,
-    turdSize: Math.max(0, Math.round(settings.filterSpeckle * scaleFactor)),
+    optTolerance: 0.1,
+    turdSize: Math.max(2, settings.filterSpeckle * 2),
     blackOnWhite: true,
     color: fgHex,
     background: 'transparent',
   });
 
-  if (bgIndex === -1) {
+  if (!bgRgb) {
     return tracedSvg;
   }
 
-  const bgHex = rgbToHex(palette[bgIndex]!);
+  const bgHex = rgbToHex(bgRgb);
   const bgPath = `<path d="M0 0H${traceWidth}V${traceHeight}H0Z" fill="${bgHex}"/>`;
   return tracedSvg.replace(/<svg\b([^>]*)>/i, `<svg$1>${bgPath}`);
 };
 
+const determineForegroundBackground = (
+  raw: Buffer,
+  width: number,
+  height: number,
+  c0: readonly [number, number, number],
+  c1: readonly [number, number, number],
+): { fgRgb: readonly [number, number, number]; bgRgb: readonly [number, number, number] } => {
+  const borderCounts = [0, 0];
+  const totalCounts = [0, 0];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      if ((raw[idx + 3] ?? 0) < 128) continue;
+
+      const r = raw[idx] ?? 0;
+      const g = raw[idx + 1] ?? 0;
+      const b = raw[idx + 2] ?? 0;
+      const d0 = colorDistSq(r, g, b, c0[0], c0[1], c0[2]);
+      const d1 = colorDistSq(r, g, b, c1[0], c1[1], c1[2]);
+      const idxMatch = d0 <= d1 ? 0 : 1;
+
+      totalCounts[idxMatch]!++;
+      if (x === 0 || x === width - 1 || y === 0 || y === height - 1) {
+        borderCounts[idxMatch]!++;
+      }
+    }
+  }
+
+  const bgIndex =
+    borderCounts[0]! !== borderCounts[1]!
+      ? borderCounts[0]! > borderCounts[1]!
+        ? 0
+        : 1
+      : totalCounts[0]! >= totalCounts[1]!
+        ? 0
+        : 1;
+  return bgIndex === 0 ? { bgRgb: c0, fgRgb: c1 } : { bgRgb: c1, fgRgb: c0 };
+};
+
 /**
- * Primary dual-engine vectorization pipeline:
- * 1) Inspect raw RGBA interior flat pixels only and cluster/merge into a halo-free palette.
- * 2) Upscale (<1200px) by 4x via Lanczos3 + blur(1.8) for smooth sub-pixel iso-contours.
- * 3) Snap every opaque pixel strictly to the nearest interior palette color.
- * 4) Route <= 2 opaque colors to Potrace cubic Beziers; route > 2 colors to native Rust vtracer.
+ * Primary AI-assisted vectorization pipeline:
+ * 1) Extract interior-only / 2-pole palette cleanly (using median only on palette sample when filterSpeckle > 12).
+ * 2) Reconstruct 4x geometry via local Real-ESRGAN (`realesrgan-ncnn-vulkan`) or CPU sharpen + ridge enhancement fallback.
+ * 3) Route 1-/2-color artwork to Potrace (`threshold: 148, alphaMax: 0.85, optTolerance: 0.1`) and multi-color
+ *    artwork to native Rust vtracer (`--corner_threshold 55 --segment_length 4.5 --splice_threshold 45 --path_precision 4`).
  */
 const tryPrimaryVectorizer = async (
   originalPath: string,
@@ -309,10 +516,9 @@ const tryPrimaryVectorizer = async (
 }> => {
   const binary = resolveVtracerBinary();
   const targetColors = Math.max(2, Math.min(64, settings.maxColors));
-  const shouldUpscale = Math.max(origWidth, origHeight) < 1200;
+  const shouldUpscale = Math.max(origWidth, origHeight) < 1200 && settings.mode !== 'pixel';
   const scaleFactor = shouldUpscale ? 4 : 1;
-  const traceWidth = origWidth * scaleFactor;
-  const traceHeight = origHeight * scaleFactor;
+  const tempAiPath = path.join(path.dirname(originalPath), 'ai_4x.png');
   const tempInputPath = path.join(path.dirname(originalPath), 'vtracer-snapped.png');
 
   try {
@@ -323,53 +529,105 @@ const tryPrimaryVectorizer = async (
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    // Step 1A: Sub-pixel iso-contour + corner-sharpened Schneider Bezier tracer for 2-pole/monochrome art
+    // Optional median only for palette sampling when filterSpeckle > 12 (never on traced geometry!)
+    let paletteRaw = origRaw;
+    let paletteWidth = origInfo.width;
+    let paletteHeight = origInfo.height;
+    if (settings.filterSpeckle > 12) {
+      const sampled = await sharp(originalPath, {
+        limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+      })
+        .median(3)
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      paletteRaw = sampled.data;
+      paletteWidth = sampled.info.width;
+      paletteHeight = sampled.info.height;
+    }
+
     const twoPole =
       settings.mode !== 'pixel'
-        ? detectTwoPoleField(
-            origRaw,
-            origInfo.width,
-            origInfo.height,
-            settings.colorPrecision,
-          )
+        ? detectTwoPoleField(origRaw, origInfo.width, origInfo.height, settings.colorPrecision) ??
+          (paletteRaw !== origRaw
+            ? detectTwoPoleField(paletteRaw, paletteWidth, paletteHeight, settings.colorPrecision)
+            : null)
         : null;
 
+    const palette = twoPole
+      ? twoPole.hasTransparentBg
+        ? [twoPole.fgRgb]
+        : [twoPole.bgRgb, twoPole.fgRgb]
+      : extractInteriorPalette(paletteRaw, paletteWidth, paletteHeight, targetColors);
+
+    // 4x AI super-resolution (or CPU Lanczos3 + deblur sharpen + local crevice ridge enhancement fallback)
+    const {
+      data: upscaledRaw,
+      width: upscaledWidth,
+      height: upscaledHeight,
+      usedAi,
+    } = await reconstruct4xGeometry(originalPath, tempAiPath, origWidth, origHeight, shouldUpscale);
+    const upscaledInfo = { width: upscaledWidth, height: upscaledHeight };
+
     if (twoPole) {
-      const subpixelSvg = traceSubpixelTwoPoleSvg(
-        twoPole,
-        origInfo.width,
-        origInfo.height,
+      const potraceSvg = await traceWithPotraceContinuous(
+        upscaledRaw,
+        upscaledInfo.width,
+        upscaledInfo.height,
+        twoPole.fgRgb,
+        twoPole.hasTransparentBg ? null : twoPole.bgRgb,
         settings,
       );
-      await fs.writeFile(outputPath, subpixelSvg, 'utf8');
+      await fs.writeFile(outputPath, potraceSvg, 'utf8');
       return {
         success: true,
-        engine: 'subpixel-bezier',
-        traceWidth: origInfo.width,
-        traceHeight: origInfo.height,
-        scaleFactor: 1,
+        engine: usedAi ? 'ai-potrace-bezier' : 'potrace-bezier',
+        traceWidth: upscaledInfo.width,
+        traceHeight: upscaledInfo.height,
+        scaleFactor,
       };
     }
 
-    const palette = extractInteriorPalette(origRaw, origInfo.width, origInfo.height, targetColors);
+    let transparentPixels = 0;
+    for (let i = 0; i < upscaledRaw.length; i += 4) {
+      if ((upscaledRaw[i + 3] ?? 0) < 128) transparentPixels++;
+    }
+    const totalUpscaledPixels = upscaledInfo.width * upscaledInfo.height;
+    const hasSignificantTransparency = transparentPixels > totalUpscaledPixels * 0.01;
 
-    let upscalePipeline = sharp(originalPath, {
-      limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
-    });
-    if (shouldUpscale) {
-      upscalePipeline = upscalePipeline
-        .resize(traceWidth, traceHeight, { kernel: sharp.kernel.lanczos3 })
-        .blur(1.8);
-    } else {
-      upscalePipeline = upscalePipeline.blur(0.6);
+    if (
+      palette.length > 0 &&
+      (palette.length === 1 || (palette.length === 2 && !hasSignificantTransparency))
+    ) {
+      const pair =
+        palette.length === 2
+          ? determineForegroundBackground(
+              upscaledRaw,
+              upscaledInfo.width,
+              upscaledInfo.height,
+              palette[0]!,
+              palette[1]!,
+            )
+          : { fgRgb: palette[0]!, bgRgb: null };
+      const potraceSvg = await traceWithPotraceContinuous(
+        upscaledRaw,
+        upscaledInfo.width,
+        upscaledInfo.height,
+        pair.fgRgb,
+        pair.bgRgb,
+        settings,
+      );
+      await fs.writeFile(outputPath, potraceSvg, 'utf8');
+      return {
+        success: true,
+        engine: usedAi ? 'ai-potrace-bezier' : 'potrace-bezier',
+        traceWidth: upscaledInfo.width,
+        traceHeight: upscaledInfo.height,
+        scaleFactor,
+      };
     }
 
-    const { data: upscaledRaw, info: upscaledInfo } = await upscalePipeline
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    let transparentPixels = 0;
+    // Snap multi-color 4x geometry image strictly to interior palette for vtracer
     if (palette.length > 0) {
       for (let i = 0; i < upscaledRaw.length; i += 4) {
         const a = upscaledRaw[i + 3] ?? 0;
@@ -378,7 +636,6 @@ const tryPrimaryVectorizer = async (
           upscaledRaw[i + 1] = 0;
           upscaledRaw[i + 2] = 0;
           upscaledRaw[i + 3] = 0;
-          transparentPixels++;
           continue;
         }
 
@@ -404,31 +661,6 @@ const tryPrimaryVectorizer = async (
       }
     }
 
-    const totalUpscaledPixels = upscaledInfo.width * upscaledInfo.height;
-    const hasSignificantTransparency = transparentPixels > totalUpscaledPixels * 0.01;
-
-    if (
-      palette.length > 0 &&
-      (palette.length === 1 || (palette.length === 2 && !hasSignificantTransparency))
-    ) {
-      const potraceSvg = await traceWithPotraceDualColor(
-        upscaledRaw,
-        upscaledInfo.width,
-        upscaledInfo.height,
-        palette,
-        settings,
-        scaleFactor,
-      );
-      await fs.writeFile(outputPath, potraceSvg, 'utf8');
-      return {
-        success: true,
-        engine: 'potrace-bezier',
-        traceWidth: upscaledInfo.width,
-        traceHeight: upscaledInfo.height,
-        scaleFactor,
-      };
-    }
-
     await sharp(upscaledRaw, {
       raw: {
         width: upscaledInfo.width,
@@ -443,7 +675,6 @@ const tryPrimaryVectorizer = async (
       16,
       Math.max(0, Math.round(settings.filterSpeckle * scaleFactor)),
     );
-    const scaledSegmentLength = Math.min(10, Math.max(3.5, 6.0 * scaleFactor));
 
     await execFileAsync(
       binary,
@@ -465,20 +696,20 @@ const tryPrimaryVectorizer = async (
         '--gradient_step',
         '0',
         '--corner_threshold',
-        String(settings.cornerThreshold),
+        '55',
         '--segment_length',
-        scaledSegmentLength.toFixed(1),
+        '4.5',
         '--splice_threshold',
-        '60',
+        '45',
         '--path_precision',
-        '3',
+        '4',
       ],
       { timeout: 30_000 },
     );
 
     return {
       success: true,
-      engine: 'vtracer-native',
+      engine: usedAi ? 'ai-vtracer-native' : 'vtracer-native',
       traceWidth: upscaledInfo.width,
       traceHeight: upscaledInfo.height,
       scaleFactor,
@@ -496,7 +727,10 @@ const tryPrimaryVectorizer = async (
       scaleFactor: 1,
     };
   } finally {
-    await fs.rm(tempInputPath, { force: true }).catch(() => undefined);
+    await Promise.all([
+      fs.rm(tempInputPath, { force: true }).catch(() => undefined),
+      fs.rm(tempAiPath, { force: true }).catch(() => undefined),
+    ]);
   }
 };
 
@@ -579,75 +813,19 @@ const traceWithPotracePosterizer = (
     );
   });
 
+/**
+ * Rescale 4x traced paths cleanly back to 1x original image coordinates (`scale(1 / scaleFactor)`)
+ * and preserve `floatPrecision: 3` without pruning tight cusp/curve segments.
+ */
 const simplifyPathD = (d: string, scaleFactor = 1): string => {
   try {
-    type AbsoluteArray = ReturnType<typeof SVGPathCommander.pathToAbsolute>;
-    const abs = SVGPathCommander.pathToAbsolute(d);
-    const minStep = 0.45 * scaleFactor;
-    const minStepSq = minStep * minStep;
-
-    const pruned: Array<AbsoluteArray[number]> = [];
-    let curX = 0;
-    let curY = 0;
-    let subStartX = 0;
-    let subStartY = 0;
-
-    for (let i = 0; i < abs.length; i++) {
-      const seg = abs[i]!;
-      const cmd = seg[0];
-
-      if (cmd === 'M') {
-        curX = Number(seg[1]);
-        curY = Number(seg[2]);
-        subStartX = curX;
-        subStartY = curY;
-        pruned.push(seg);
-        continue;
-      }
-
-      if (cmd === 'Z') {
-        curX = subStartX;
-        curY = subStartY;
-        pruned.push(seg);
-        continue;
-      }
-
-      if (cmd === 'L') {
-        const nx = Number(seg[1]);
-        const ny = Number(seg[2]);
-        const dx = nx - curX;
-        const dy = ny - curY;
-        const nextSeg = abs[i + 1];
-        if (dx * dx + dy * dy < minStepSq && nextSeg && nextSeg[0] !== 'Z' && nextSeg[0] !== 'M') {
-          continue;
-        }
-        curX = nx;
-        curY = ny;
-        pruned.push(seg);
-        continue;
-      }
-
-      if (cmd === 'C') {
-        const nx = Number(seg[5]);
-        const ny = Number(seg[6]);
-        const dx = nx - curX;
-        const dy = ny - curY;
-        const nextSeg = abs[i + 1];
-        if (dx * dx + dy * dy < minStepSq && nextSeg && nextSeg[0] !== 'Z' && nextSeg[0] !== 'M') {
-          continue;
-        }
-        curX = nx;
-        curY = ny;
-        pruned.push(seg);
-        continue;
-      }
-
-      pruned.push(seg);
+    let commander = new SVGPathCommander(d);
+    if (scaleFactor !== 1) {
+      commander = commander.transform({ scale: [1 / scaleFactor, 1 / scaleFactor] });
     }
-
-    if (pruned.length === 0) return d;
-    const optimized = SVGPathCommander.optimizePath(pruned as AbsoluteArray);
-    const rounded = SVGPathCommander.roundPath(optimized, 2);
+    const abs = SVGPathCommander.pathToAbsolute(commander.toString());
+    const optimized = SVGPathCommander.optimizePath(abs);
+    const rounded = SVGPathCommander.roundPath(optimized, 3);
     return SVGPathCommander.pathToString(rounded);
   } catch {
     return d;
@@ -658,21 +836,17 @@ const optimizeVectorSvg = (
   rawSvg: string,
   displayWidth: number,
   displayHeight: number,
-  traceWidth = displayWidth,
-  traceHeight = displayHeight,
   scaleFactor = 1,
-  simplifyNodes = true,
 ): string => {
-  const simplifiedRaw = simplifyNodes
-    ? rawSvg.replace(
-        /\bd="([^"]+)"/gi,
-        (_full, d: string) => `d="${simplifyPathD(d, scaleFactor)}"`,
-      )
-    : rawSvg;
+  const scaledRaw = rawSvg.replace(
+    /\bd="([^"]+)"/gi,
+    (_full, d: string) => `d="${simplifyPathD(d, scaleFactor)}"`,
+  );
 
-  const withViewBox = /\bviewBox=/.test(simplifiedRaw)
-    ? simplifiedRaw
-    : simplifiedRaw.replace(/<svg\b/, `<svg viewBox="0 0 ${traceWidth} ${traceHeight}"`);
+  // Set normalized viewBox in original 1x display dimensions after scaling path coordinates
+  const withViewBox = /\bviewBox=/i.test(scaledRaw)
+    ? scaledRaw.replace(/\bviewBox=["'][^"']*["']/i, `viewBox="0 0 ${displayWidth} ${displayHeight}"`)
+    : scaledRaw.replace(/<svg\b/, `<svg viewBox="0 0 ${displayWidth} ${displayHeight}"`);
 
   const result = optimizeSvg(withViewBox, {
     multipass: true,
@@ -689,7 +863,7 @@ const optimizeVectorSvg = (
               shortname: false,
             },
             convertPathData: {
-              floatPrecision: 2,
+              floatPrecision: 3,
             },
           },
         },
@@ -702,7 +876,7 @@ const optimizeVectorSvg = (
       .replace(/\s*\bwidth=["'][^"']*["']/gi, '')
       .replace(/\s*\bheight=["'][^"']*["']/gi, '');
     const hasVb = /\bviewBox=/.test(cleaned);
-    const vbAttr = hasVb ? '' : ` viewBox="0 0 ${traceWidth} ${traceHeight}"`;
+    const vbAttr = hasVb ? '' : ` viewBox="0 0 ${displayWidth} ${displayHeight}"`;
     return `<svg${cleaned}${vbAttr} width="${displayWidth}" height="${displayHeight}">`;
   });
 };
@@ -712,12 +886,9 @@ const traceAndOptimizeSvg = async (
   outputPath: string,
   settings: VectorSettings,
 ): Promise<void> => {
-  let pipeline = sharp(inputPath, { limitInputPixels: SHARP_LIMIT_INPUT_PIXELS });
-  if (settings.filterSpeckle >= 4) {
-    pipeline = pipeline.median(settings.filterSpeckle >= 16 ? 5 : 3);
-  }
-
-  const { data, info } = await pipeline
+  const { data, info } = await sharp(inputPath, {
+    limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+  })
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -737,7 +908,7 @@ const traceAndOptimizeSvg = async (
     rawSvg = await traceWithPotracePosterizer(pngBuffer, settings);
   }
 
-  const optimizedSvg = optimizeVectorSvg(rawSvg, info.width, info.height);
+  const optimizedSvg = optimizeVectorSvg(rawSvg, info.width, info.height, 1);
   await fs.writeFile(outputPath, optimizedSvg, 'utf8');
 };
 
@@ -770,10 +941,7 @@ export const runVectorization = async (
       rawSvg,
       origWidth,
       origHeight,
-      primaryRes.traceWidth,
-      primaryRes.traceHeight,
       primaryRes.scaleFactor,
-      primaryRes.engine !== 'potrace-bezier' && primaryRes.engine !== 'subpixel-bezier',
     );
     await fs.writeFile(svgPath, optimized, 'utf8');
   } else {
@@ -791,6 +959,8 @@ export const readStoredEngine = async (svgPath: string): Promise<VectorEngine> =
   try {
     const val = (await fs.readFile(path.join(path.dirname(svgPath), 'engine.txt'), 'utf8')).trim();
     if (
+      val === 'ai-vtracer-native' ||
+      val === 'ai-potrace-bezier' ||
       val === 'vtracer-native' ||
       val === 'subpixel-bezier' ||
       val === 'potrace-bezier' ||

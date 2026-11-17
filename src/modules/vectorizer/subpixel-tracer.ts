@@ -521,11 +521,11 @@ const refineAndSharpenLoop = (
   const sigma = Math.max(0.8, Math.min(4.2, edgeBlurPx * 1.05, n * 0.04));
   pts = gaussianSmoothNonCorners(pts, corners, sigma);
 
-  // Bounded ray intersection + macro arm tangent vectors for clean sharp cusps
+  // Bounded ray intersection + local arm tangent vectors for curved cusps
   const armTanIn = new Map<number, Point2D>();
   const armTanOut = new Map<number, Point2D>();
-  const armStart = Math.min(3, Math.max(1, Math.floor(n / 10)));
-  const armEnd = Math.min(Math.floor(n / 6), 10);
+  const armStart = 1;
+  const armEnd = Math.min(Math.floor(n / 8), 4);
 
   for (let i = 0; i < n; i++) {
     if (!corners[i]) continue;
@@ -542,7 +542,7 @@ const refineAndSharpenLoop = (
       const t = ((pOut1.x - pIn1.x) * d2y - (pOut1.y - pIn1.y) * d2x) / denom;
       const ix = pIn1.x + t * d1x;
       const iy = pIn1.y + t * d1y;
-      if (Math.hypot(ix - pts[i]!.x, iy - pts[i]!.y) <= 1.25) {
+      if (Math.hypot(ix - pts[i]!.x, iy - pts[i]!.y) <= 0.9) {
         pts[i] = { x: ix, y: iy };
       }
     }
@@ -719,8 +719,8 @@ export const traceSubpixelTwoPoleSvg = (
       if (settings.mode === 'polygon') {
         for (let i = 0; i < spanPts.length; i++) {
           const pt = spanPts[i]!;
-          if (s === 0 && i === 0) pathD += `M${pt.x.toFixed(2)} ${pt.y.toFixed(2)}`;
-          else pathD += `L${pt.x.toFixed(2)} ${pt.y.toFixed(2)}`;
+          if (s === 0 && i === 0) pathD += `M${pt.x.toFixed(3)} ${pt.y.toFixed(3)}`;
+          else pathD += `L${pt.x.toFixed(3)} ${pt.y.toFixed(3)}`;
         }
         continue;
       }
@@ -741,8 +741,8 @@ export const traceSubpixelTwoPoleSvg = (
       const cubics = fitCubicBezierSpan(spanPts, tHat1, tHat2, maxErrSq);
       for (let c = 0; c < cubics.length; c++) {
         const b = cubics[c]!;
-        if (s === 0 && c === 0) pathD += `M${b[0].x.toFixed(2)} ${b[0].y.toFixed(2)}`;
-        pathD += `C${b[1].x.toFixed(2)} ${b[1].y.toFixed(2)} ${b[2].x.toFixed(2)} ${b[2].y.toFixed(2)} ${b[3].x.toFixed(2)} ${b[3].y.toFixed(2)}`;
+        if (s === 0 && c === 0) pathD += `M${b[0].x.toFixed(3)} ${b[0].y.toFixed(3)}`;
+        pathD += `C${b[1].x.toFixed(3)} ${b[1].y.toFixed(3)} ${b[2].x.toFixed(3)} ${b[2].y.toFixed(3)} ${b[3].x.toFixed(3)} ${b[3].y.toFixed(3)}`;
       }
     }
     pathD += 'Z';
