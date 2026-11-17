@@ -814,12 +814,23 @@ const traceWithPotracePosterizer = (
   });
 
 /**
- * Rescale 4x traced paths cleanly back to 1x original image coordinates (`scale(1 / scaleFactor)`)
- * and preserve `floatPrecision: 3` without pruning tight cusp/curve segments.
+ * Rescale 4x traced paths cleanly back to 1x original image coordinates (`scale(1 / scaleFactor)`),
+ * folding any `<path transform="translate(...)">` before scaling (vtracer emits these for
+ * multi-color paths), and preserve `floatPrecision: 3` without pruning tight cusp segments.
  */
-const simplifyPathD = (d: string, scaleFactor = 1): string => {
+const simplifyPathD = (
+  d: string,
+  scaleFactor = 1,
+  preTranslateX = 0,
+  preTranslateY = 0,
+): string => {
   try {
     let commander = new SVGPathCommander(d);
+    if (preTranslateX !== 0 || preTranslateY !== 0) {
+      commander = commander.transform({
+        translate: [preTranslateX, preTranslateY],
+      });
+    }
     if (scaleFactor !== 1) {
       commander = commander.transform({ scale: [1 / scaleFactor, 1 / scaleFactor] });
     }
@@ -838,9 +849,34 @@ const optimizeVectorSvg = (
   displayHeight: number,
   scaleFactor = 1,
 ): string => {
+  const fullCanvasRectPrefix = `M0 0H${displayWidth * scaleFactor}V${displayHeight * scaleFactor}H0Z`;
   const scaledRaw = rawSvg.replace(
-    /\bd="([^"]+)"/gi,
-    (_full, d: string) => `d="${simplifyPathD(d, scaleFactor)}"`,
+    /<path\b([^>]*?)\/?>/gi,
+    (_full, rawAttrs: string) => {
+      const dMatch = rawAttrs.match(/\bd="([^"]+)"/i);
+      if (!dMatch?.[1]) return _full;
+
+      const origD = dMatch[1];
+      const trMatch = rawAttrs.match(
+        /\btransform="translate\(([^,)]+),([^)]+)\)"/i,
+      );
+      const tx = trMatch ? Number.parseFloat(trMatch[1] ?? '0') || 0 : 0;
+      const ty = trMatch ? Number.parseFloat(trMatch[2] ?? '0') || 0 : 0;
+      const isFullBgRect =
+        origD === fullCanvasRectPrefix ||
+        (scaleFactor > 1 &&
+          /^M\s*0[\s,]+0\s+H\s*\d+\s+V\s*\d+\s+H\s*0\s*Z$/i.test(origD.trim()) &&
+          tx === 0 &&
+          ty === 0);
+      const nextD = isFullBgRect
+        ? `M0 0H${displayWidth}V${displayHeight}H0Z`
+        : simplifyPathD(origD, scaleFactor, tx, ty);
+
+      const cleanedAttrs = rawAttrs
+        .replace(/\s*\btransform="[^"]*"/i, '')
+        .replace(/\bd="[^"]+"/i, `d="${nextD}"`);
+      return `<path${cleanedAttrs}/>`;
+    },
   );
 
   // Set normalized viewBox in original 1x display dimensions after scaling path coordinates
