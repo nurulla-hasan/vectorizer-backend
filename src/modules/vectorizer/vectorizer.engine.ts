@@ -432,8 +432,10 @@ const runPotraceTrace = (
 
 /**
  * Trace 1- or 2-color artwork with Potrace using a continuous grayscale coverage mask
- * from the 4x Lanczos3 + blur(0.45) upscaled buffer so `threshold: 140` keeps narrow
- * white crevices open and `alphaMax: 0.9` + `optTolerance: 0.12` preserves sharp cusps.
+ * from the 4x Lanczos3 + blur(0.45) upscaled buffer. The threshold sits ~81% of the
+ * way from the background pole to the foreground pole so only the dense stroke core
+ * survives: soft glow/JPEG halo around a stroke stays background and the contour hugs
+ * the dark core instead of the outer edge of the blur; `alphaMax: 0.9` + `optTolerance: 0.12` preserves sharp cusps.
  */
 const traceWithPotraceContinuous = async (
   upscaledRaw: Buffer,
@@ -492,7 +494,7 @@ const traceWithPotraceContinuous = async (
     .toBuffer();
 
   const tracedSvg = await runPotraceTrace(maskPng, {
-    threshold: 148,
+    threshold: 48,
     alphaMax: 0.85,
     optCurve: true,
     optTolerance: 0.1,
@@ -555,7 +557,7 @@ const determineForegroundBackground = (
  * Primary AI-assisted vectorization pipeline:
  * 1) Extract interior-only / 2-pole palette cleanly (using median only on palette sample when filterSpeckle > 12).
  * 2) Reconstruct 4x geometry via local Real-ESRGAN (`realesrgan-ncnn-vulkan`) or CPU sharpen + ridge enhancement fallback.
- * 3) Route 1-/2-color artwork to Potrace (`threshold: 148, alphaMax: 0.85, optTolerance: 0.1`) and multi-color
+ * 3) Route 1-/2-color artwork to Potrace (`threshold: 48, alphaMax: 0.85, optTolerance: 0.1`) and multi-color
  *    artwork to native Rust vtracer (`--corner_threshold 55 --segment_length 4.5 --splice_threshold 45 --path_precision 4`).
  */
 const tryPrimaryVectorizer = async (
