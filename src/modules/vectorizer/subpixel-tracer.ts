@@ -194,6 +194,8 @@ export const detectTwoPoleField = (
   const toleranceSq = tolerance * tolerance;
   let checked = 0;
   let colinear = 0;
+  let nearPoles = 0;
+  let chromaticMids = 0;
   for (let y = 0; y < height; y += stride) {
     for (let x = 0; x < width; x += stride) {
       const idx = (y * width + x) * 4;
@@ -210,10 +212,26 @@ export const detectTwoPoleField = (
       if (distSq3(r, g, b, pr, pg, pb) <= toleranceSq) {
         colinear++;
       }
+      // True two-pole art is bimodal: nearly all pixels hug one pole and only a thin
+      // anti-aliasing ramp sits between. Flat multi-tone illustrations are colinear too
+      // but put large areas on mid tones, which a 2-pole binarizer would delete.
+      if (t <= 0.15 || t >= 0.85) {
+        nearPoles++;
+      } else if (Math.max(r, g, b) - Math.min(r, g, b) > 24) {
+        chromaticMids++;
+      }
     }
   }
 
   if (checked === 0 || colinear / checked < 0.94) {
+    return null;
+  }
+  // A neutral (achromatic) mid-tone band is a soft drop shadow/glow around line art —
+  // that still binarizes cleanly onto the two poles. Large *colored* mid-tone areas
+  // (e.g. a light-blue deck in an illustration) would be deleted, so reject those.
+  const nearPoleRatio = nearPoles / checked;
+  const chromaticMidRatio = chromaticMids / checked;
+  if (nearPoleRatio < 0.9 && !(nearPoleRatio >= 0.6 && chromaticMidRatio <= 0.02)) {
     return null;
   }
 

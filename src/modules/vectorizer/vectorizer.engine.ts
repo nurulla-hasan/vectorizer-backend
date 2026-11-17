@@ -159,22 +159,36 @@ const enhanceLocalCrevices = (
   return out;
 };
 
-const reconstruct4xGeometry = async (
+const reconstructUpscaledGeometry = async (
   originalPath: string,
   tempAiPath: string,
   origWidth: number,
   origHeight: number,
-  shouldUpscale: boolean,
+  factor: 1 | 2 | 4,
 ): Promise<{
   data: Buffer;
   width: number;
   height: number;
   usedAi: boolean;
 }> => {
-  if (!shouldUpscale) {
+  if (factor === 1) {
     const { data, info } = await sharp(originalPath, {
       limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
     })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return { data, width: info.width, height: info.height, usedAi: false };
+  }
+
+  // 2x is a plain denoising resample used by the multi-color vtracer path: JPEG block
+  // noise along boundaries is what makes traced corners bulge, so avoid sharpening here.
+  if (factor === 2) {
+    const { data, info } = await sharp(originalPath, {
+      limitInputPixels: SHARP_LIMIT_INPUT_PIXELS,
+    })
+      .resize(origWidth * 2, origHeight * 2, { kernel: sharp.kernel.lanczos3 })
+      .median(3)
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
@@ -249,6 +263,49 @@ const colorDistSq = (
   g2: number,
   b2: number,
 ): number => (r1 - r2) * (r1 - r2) + (g1 - g2) * (g1 - g2) + (b1 - b2) * (b1 - b2);
+
+/**
+ * vtracer's internal color clustering emits a ramp of near-duplicate fills along every
+ * boundary (e.g. #173D7B, #183E7C, #1A407E) even when the traced raster contains only
+ * the snapped palette. Those sliver layers double every contour and make corners look
+ * ragged, so map each emitted fill back onto the palette the raster was snapped to.
+ */
+const snapSvgFillsToPalette = (
+  svg: string,
+  palette: ReadonlyArray<readonly [number, number, number]>,
+): string => {
+  if (palette.length === 0) return svg;
+
+  const resolveFill = (fill: string): string => {
+    const match = fill.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (!match) return fill;
+    const hex =
+      match[1]!.length === 3
+        ? match[1]!
+            .split('')
+            .map((c) => c + c)
+            .join('')
+        : match[1]!;
+    const r = Number.parseInt(hex.slice(0, 2), 16);
+    const g = Number.parseInt(hex.slice(2, 4), 16);
+    const b = Number.parseInt(hex.slice(4, 6), 16);
+
+    let best = palette[0]!;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const cand of palette) {
+      const dist = colorDistSq(r, g, b, cand[0], cand[1], cand[2]);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = cand;
+      }
+    }
+    return rgbToHex(best);
+  };
+
+  return svg.replace(/fill="(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}))"/g, (_m, fill: string) => {
+    return `fill="${resolveFill(fill)}"`;
+  });
+};
 
 /**
  * Extract up to `maxColors` dominant solid RGB colors strictly from interior flat pixels
@@ -516,8 +573,8 @@ const tryPrimaryVectorizer = async (
 }> => {
   const binary = resolveVtracerBinary();
   const targetColors = Math.max(2, Math.min(64, settings.maxColors));
-  const shouldUpscale = Math.max(origWidth, origHeight) < 1200 && settings.mode !== 'pixel';
-  const scaleFactor = shouldUpscale ? 4 : 1;
+  const longestSide = Math.max(origWidth, origHeight);
+  const pixelMode = settings.mode === 'pixel';
   const tempAiPath = path.join(path.dirname(originalPath), 'ai_4x.png');
   const tempInputPath = path.join(path.dirname(originalPath), 'vtracer-snapped.png');
 
@@ -547,12 +604,22 @@ const tryPrimaryVectorizer = async (
     }
 
     const twoPole =
-      settings.mode !== 'pixel'
+      !pixelMode
         ? detectTwoPoleField(origRaw, origInfo.width, origInfo.height, settings.colorPrecision) ??
           (paletteRaw !== origRaw
             ? detectTwoPoleField(paletteRaw, paletteWidth, paletteHeight, settings.colorPrecision)
             : null)
         : null;
+
+    // Multi-color art at the service cap traces from a 2x denoised source: tracing 1x
+    // JPEG edges is what produces the lumpy, uneven key-cap corners.
+    const scaleFactor: 1 | 2 | 4 = pixelMode
+      ? 1
+      : longestSide < 1200
+        ? 4
+        : !twoPole && longestSide <= 2048
+          ? 2
+          : 1;
 
     const palette = twoPole
       ? twoPole.hasTransparentBg
@@ -566,7 +633,7 @@ const tryPrimaryVectorizer = async (
       width: upscaledWidth,
       height: upscaledHeight,
       usedAi,
-    } = await reconstruct4xGeometry(originalPath, tempAiPath, origWidth, origHeight, shouldUpscale);
+    } = await reconstructUpscaledGeometry(originalPath, tempAiPath, origWidth, origHeight, scaleFactor);
     const upscaledInfo = { width: upscaledWidth, height: upscaledHeight };
 
     if (twoPole) {
@@ -671,9 +738,11 @@ const tryPrimaryVectorizer = async (
       .png()
       .toFile(tempInputPath);
 
-    const scaledFilterSpeckle = Math.min(
-      16,
-      Math.max(0, Math.round(settings.filterSpeckle * scaleFactor)),
+    // filter_speckle is in trace pixels; normalize by the upscale factor so thin strokes
+    // are not erased when the trace resolution doubles (12 -> 3 at 2x, not 16).
+    const scaledFilterSpeckle = Math.max(
+      1,
+      Math.min(16, Math.round((settings.filterSpeckle * scaleFactor * scaleFactor) / 16)),
     );
 
     await execFileAsync(
@@ -706,6 +775,11 @@ const tryPrimaryVectorizer = async (
       ],
       { timeout: 30_000 },
     );
+
+    if (palette.length > 0) {
+      const tracedSvg = await fs.readFile(outputPath, 'utf8');
+      await fs.writeFile(outputPath, snapSvgFillsToPalette(tracedSvg, palette), 'utf8');
+    }
 
     return {
       success: true,
