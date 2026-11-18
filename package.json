@@ -18,8 +18,6 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
-    "setup:vtracer": "node scripts/install-vtracer.mjs",
-    "setup:ai": "node scripts/install-realesrgan.mjs",
     "db:seed": "tsx -e \"import('./src/lib/seed.ts').then(m => m.seedAdmin()).then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); })\""
   },
   "dependencies": {

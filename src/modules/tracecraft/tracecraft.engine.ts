@@ -15,15 +15,7 @@ import type { VectorSettings } from "./tracecraft.validation.js";
 
 export const SHARP_LIMIT_INPUT_PIXELS = 25_000_000;
 
-export type VectorEngine =
-  | "tracecraft-ai"
-  // Legacy local engines, kept so stored jobs keep their original label.
-  | "ai-vtracer-native"
-  | "ai-potrace-bezier"
-  | "vtracer-native"
-  | "subpixel-bezier"
-  | "potrace-bezier"
-  | "imagetracerjs";
+export type VectorEngine = "tracecraft-ai";
 
 export interface VectorPathItem {
   id: string;
@@ -328,21 +320,13 @@ export const readStoredEngine = async (
     const val = (
       await fs.readFile(path.join(path.dirname(svgPath), "engine.txt"), "utf8")
     ).trim();
-    if (
-      val === "tracecraft-ai" ||
-      val === "ai-vtracer-native" ||
-      val === "ai-potrace-bezier" ||
-      val === "vtracer-native" ||
-      val === "subpixel-bezier" ||
-      val === "potrace-bezier" ||
-      val === "imagetracerjs"
-    ) {
+    if (val === "tracecraft-ai") {
       return val;
     }
   } catch {
     // Default if engine metadata file is absent
   }
-  return "imagetracerjs";
+  return "tracecraft-ai";
 };
 
 const normalizeHexColor = (rawFill: string): string => {

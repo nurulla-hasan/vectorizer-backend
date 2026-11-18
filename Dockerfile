@@ -20,10 +20,6 @@ COPY prisma ./prisma
 
 RUN pnpm install --frozen-lockfile
 
-# Download Linux vtracer binary into /app/bin/vtracer
-COPY scripts ./scripts
-RUN pnpm setup:vtracer
-
 # Copy source and build
 COPY tsconfig.json ./
 COPY src ./src
