@@ -3,8 +3,8 @@ import { AppError } from '../../utils/app-error.js';
 import { catchAsync } from '../../utils/catch-async.js';
 import { sendResponse } from '../../utils/send-response.js';
 import { fetchImageFromUrl } from './url-import.js';
-import { vectorizerService } from './vectorizer.service.js';
-import { exportQuerySchema, vectorJobIdSchema } from './vectorizer.validation.js';
+import { tracecraftService } from './tracecraft.service.js';
+import { exportQuerySchema, vectorJobIdSchema } from './tracecraft.validation.js';
 
 const getJobId = (id: string | string[] | undefined): string => {
   const parsed = vectorJobIdSchema.safeParse(id);
@@ -15,7 +15,7 @@ const getJobId = (id: string | string[] | undefined): string => {
 };
 
 const processImage = catchAsync(async (req, res) => {
-  const result = await vectorizerService.processImage(req.file, req.body ?? {}, req.user?.id);
+  const result = await tracecraftService.processImage(req.file, req.body ?? {}, req.user?.id);
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
@@ -28,7 +28,7 @@ const processImage = catchAsync(async (req, res) => {
 const importFromUrl = catchAsync(async (req, res) => {
   const { url, ...rawSettings } = req.body ?? {};
   const imported = await fetchImageFromUrl(String(url));
-  const result = await vectorizerService.processImage(
+  const result = await tracecraftService.processImage(
     {
       buffer: imported.buffer,
       originalname: imported.filename,
@@ -48,7 +48,7 @@ const importFromUrl = catchAsync(async (req, res) => {
 
 const getOriginalImage = catchAsync(async (req, res) => {
   const jobId = getJobId(req.params.id);
-  const { filePath } = await vectorizerService.getOriginalImageFile(jobId, req.user?.id);
+  const { filePath } = await tracecraftService.getOriginalImageFile(jobId, req.user?.id);
 
   res.setHeader('Content-Type', 'image/png');
   res.setHeader('Cache-Control', 'private, max-age=3600');
@@ -57,7 +57,7 @@ const getOriginalImage = catchAsync(async (req, res) => {
 
 const getPreview = catchAsync(async (req, res) => {
   const jobId = getJobId(req.params.id);
-  const result = await vectorizerService.getPreviewData(jobId, req.user?.id);
+  const result = await tracecraftService.getPreviewData(jobId, req.user?.id);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -69,7 +69,7 @@ const getPreview = catchAsync(async (req, res) => {
 
 const reprocess = catchAsync(async (req, res) => {
   const jobId = getJobId(req.params.id);
-  const result = await vectorizerService.reprocessJob(jobId, req.body ?? {}, req.user?.id);
+  const result = await tracecraftService.reprocessJob(jobId, req.body ?? {}, req.user?.id);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -81,7 +81,7 @@ const reprocess = catchAsync(async (req, res) => {
 
 const saveSvg = catchAsync(async (req, res) => {
   const jobId = getJobId(req.params.id);
-  const result = await vectorizerService.saveEditedSvg(
+  const result = await tracecraftService.saveEditedSvg(
     jobId,
     String(req.body?.svg ?? ''),
     req.user?.id,
@@ -102,7 +102,7 @@ const downloadSvg = catchAsync(async (req, res) => {
 
   const jobId = getJobId(req.params.id);
   const { format, scale, preset } = exportQuerySchema.parse(req.query);
-  const { buffer, mimeType, fileName } = await vectorizerService.exportVectorFile(
+  const { buffer, mimeType, fileName } = await tracecraftService.exportVectorFile(
     jobId,
     req.user.id,
     format,
@@ -116,7 +116,7 @@ const downloadSvg = catchAsync(async (req, res) => {
   res.send(buffer);
 });
 
-export const vectorizerController = {
+export const tracecraftController = {
   processImage,
   importFromUrl,
   getOriginalImage,

@@ -13,7 +13,7 @@ import {
   EXPORT_PRESET_OPTIONS,
   renderDxfFromSvg,
   renderEpsFromSvg,
-} from './vector-formats.js';
+} from './trace-formats.js';
 import {
   parseSvgPreview,
   readStoredEngine,
@@ -22,13 +22,13 @@ import {
   type VectorEngine,
   type VectorPathItem,
   type VectorPreviewData,
-} from './vectorizer.engine.js';
+} from './tracecraft.engine.js';
 import {
   type ExportFormat,
   type ExportStyle,
   type VectorSettings,
   vectorSettingsSchema,
-} from './vectorizer.validation.js';
+} from './tracecraft.validation.js';
 
 export type { VectorEngine, VectorPathItem, VectorPreviewData };
 
@@ -469,7 +469,7 @@ const exportVectorFile = async (
   };
 };
 
-export const vectorizerService = {
+export const tracecraftService = {
   processImage,
   getOriginalImageFile,
   getPreviewData,

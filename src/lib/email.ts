@@ -38,7 +38,7 @@ export const sendVerificationEmail = async (
   });
 
   await transporter.sendMail({
-    from: config.email_sender || 'Vectorizer AI <no-reply@example.com>',
+    from: config.email_sender || 'TraceCraft AI <no-reply@example.com>',
     to: email,
     subject: 'Email Verification Code',
     text: `Your verification code is: ${otp}. Valid for ${expirationMinutes} minutes.`,
@@ -70,7 +70,7 @@ export const sendPasswordResetEmail = async (
   });
 
   await transporter.sendMail({
-    from: config.email_sender || 'Vectorizer AI <no-reply@example.com>',
+    from: config.email_sender || 'TraceCraft AI <no-reply@example.com>',
     to: email,
     subject: 'Password Reset Code',
     text: `Your password reset code is: ${otp}. Valid for ${expirationMinutes} minutes.`,

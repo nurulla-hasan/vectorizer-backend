@@ -28,7 +28,7 @@ export default {
   smtp_port: process.env.SMTP_PORT || 587,
   smtp_user: process.env.SMTP_USER,
   smtp_password: process.env.SMTP_PASSWORD,
-  email_sender: process.env.EMAIL_SENDER || 'Vectorizer <no-reply@example.com>',
+  email_sender: process.env.EMAIL_SENDER || 'TraceCraft <no-reply@example.com>',
   cloudinary_cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   cloudinary_api_key: process.env.CLOUDINARY_API_KEY,
   cloudinary_api_secret: process.env.CLOUDINARY_API_SECRET,

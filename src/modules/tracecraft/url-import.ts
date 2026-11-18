@@ -102,7 +102,7 @@ export const fetchImageFromUrl = async (
       response = await fetch(parsed, {
         redirect: 'manual',
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: { accept: 'image/*', 'user-agent': 'VectorizerBot/1.0' },
+        headers: { accept: 'image/*', 'user-agent': 'TraceCraftBot/1.0' },
       });
     } catch {
       throw new AppError(

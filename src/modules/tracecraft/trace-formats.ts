@@ -204,7 +204,7 @@ export const renderEpsFromSvg = (
 
   const lines: string[] = [
     '%!PS-Adobe-3.0 EPSF-3.0',
-    '%%Creator: Vectorizer',
+    '%%Creator: TraceCraft',
     '%%Title: Vectorized artwork',
     `%%BoundingBox: 0 0 ${Math.ceil(width)} ${Math.ceil(height)}`,
     `%%HiResBoundingBox: 0 0 ${psNumber(width)} ${psNumber(height)}`,

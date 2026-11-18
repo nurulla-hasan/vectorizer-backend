@@ -1,12 +1,15 @@
 import { z } from 'zod';
 
 export const vectorSettingsSchema = z.object({
-  colorPrecision: z.coerce.number().int().min(1).max(8).default(6),
   filterSpeckle: z.coerce.number().int().min(0).max(64).default(12),
-  cornerThreshold: z.coerce.number().min(0).max(180).default(70),
   mode: z.enum(['spline', 'polygon', 'pixel']).default('spline'),
-  hierarchical: z.enum(['stacked', 'cutout']).default('stacked'),
-  maxColors: z.coerce.number().int().min(2).max(64).default(6),
+  hierarchical: z.enum(['stacked', 'cutout']).default('cutout'),
+  maxColors: z.coerce.number().int().min(2).max(64).default(24),
+  removeBackground: z
+    .union([z.boolean(), z.enum(['true', 'false', '1', '0'])])
+    .transform((value) => value === true || value === 'true' || value === '1')
+    .default(false),
+  backgroundTolerance: z.coerce.number().int().min(0).max(128).default(64),
 });
 
 export const vectorJobIdSchema = z.string().uuid('Invalid vector job ID');

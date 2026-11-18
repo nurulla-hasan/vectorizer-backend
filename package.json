@@ -1,8 +1,8 @@
 {
-  "name": "vectorizer-backend",
+  "name": "tracecraft-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "REST API for Vectorizer",
+  "description": "REST API for TraceCraft",
   "main": "dist/src/server.js",
   "engines": {
     "node": ">=20.0.0"
@@ -36,7 +36,6 @@
     "express-rate-limit": "^8.2.1",
     "helmet": "^8.1.0",
     "http-status": "^2.1.0",
-    "imagetracerjs": "^1.2.6",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",
     "nodemailer": "^7.0.6",
@@ -47,7 +46,6 @@
     "pg": "^8.22.0",
     "pino": "^9.7.0",
     "pino-http": "^10.5.0",
-    "potrace": "^2.1.8",
     "redis": "^6.2.1",
     "sharp": "^0.35.5",
     "svg-path-commander": "^2.3.4",
