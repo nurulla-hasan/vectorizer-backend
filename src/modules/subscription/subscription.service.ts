@@ -3,10 +3,10 @@ import config from '../../config/index';
 import { prisma } from '../../lib/prisma';
 import { AppError } from '../../utils/app-error';
 import {
-  getPlanPrice,
+  getSubscriptionPlanById,
   PAYMENT_PROVIDER_LABELS,
   type PaymentProviderCode,
-  PLAN_CATALOG,
+  SUBSCRIPTION_PLANS,
 } from './subscription.constants';
 import type {
   CreatePaymentRequestInput,
@@ -19,7 +19,7 @@ const paymentMethods = [
   { provider: 'ROCKET' as const, number: config.payment_rocket_number },
 ];
 
-const getPlans = () => Object.values(PLAN_CATALOG);
+const getPlans = () => SUBSCRIPTION_PLANS;
 
 const getPaymentMethods = () =>
   paymentMethods
@@ -31,14 +31,13 @@ const getPaymentMethods = () =>
     }));
 
 const createPaymentRequestIntoDB = async (userId: string, payload: CreatePaymentRequestInput) => {
-  const plan = PLAN_CATALOG[payload.plan];
-  const price = getPlanPrice(payload.plan, payload.billingCycle);
+  const selectedPlan = getSubscriptionPlanById(payload.planId);
 
-  if (!price) {
+  if (!selectedPlan || selectedPlan.code === 'FREE' || !selectedPlan.billingCycle) {
     throw new AppError(
       httpStatus.BAD_REQUEST,
-      'This plan is not available for the selected billing cycle.',
-      'INVALID_BILLING_CYCLE',
+      'Invalid subscription plan selected.',
+      'INVALID_PLAN',
     );
   }
 
@@ -76,10 +75,10 @@ const createPaymentRequestIntoDB = async (userId: string, payload: CreatePayment
   return prisma.paymentRequest.create({
     data: {
       userId,
-      plan: plan.code,
-      billingCycle: payload.billingCycle,
+      plan: selectedPlan.code,
+      billingCycle: selectedPlan.billingCycle,
       provider: payload.provider,
-      amount: price.amountBdt,
+      amount: selectedPlan.amountBdt,
       senderNumber: payload.senderNumber,
       transactionId: payload.transactionId,
     },

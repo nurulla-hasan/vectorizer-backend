@@ -6,8 +6,7 @@ const bdMobileNumber = z
   .regex(/^01[3-9]\d{8}$/, 'Enter a valid 11-digit Bangladeshi mobile number.');
 
 export const createPaymentRequestSchema = z.object({
-  plan: z.literal('PRO'),
-  billingCycle: z.enum(['MONTHLY', 'YEARLY']).default('MONTHLY'),
+  planId: z.enum(['pro_monthly', 'pro_yearly']),
   provider: z.enum(['BKASH', 'NAGAD', 'ROCKET']),
   senderNumber: bdMobileNumber,
   transactionId: z
