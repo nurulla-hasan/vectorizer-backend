@@ -35,4 +35,5 @@ export default {
   payment_bkash_number: process.env.PAYMENT_BKASH_NUMBER || '',
   payment_nagad_number: process.env.PAYMENT_NAGAD_NUMBER || '',
   payment_rocket_number: process.env.PAYMENT_ROCKET_NUMBER || '',
+  vectorizer_engine_url: process.env.VECTORIZER_ENGINE_URL || 'http://localhost:8000',
 };
