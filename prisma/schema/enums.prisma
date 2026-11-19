@@ -23,12 +23,6 @@ enum BillingCycle {
   YEARLY
 }
 
-enum VectorJobStatus {
-  PROCESSING
-  COMPLETED
-  FAILED
-}
-
 enum PaymentProvider {
   BKASH
   NAGAD

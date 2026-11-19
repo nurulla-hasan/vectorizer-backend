@@ -34,7 +34,6 @@ app.use(
 );
 app.use(compression());
 app.use(cookieParser());
-// 8mb covers JSON payloads that carry a full edited SVG document.
 app.use(express.json({ limit: '8mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(passport.initialize());
